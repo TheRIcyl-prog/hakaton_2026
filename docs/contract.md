@@ -3,7 +3,7 @@
 Меняет только A. Живой пример: `docs/sample-snapshot.json` (это реальный ответ на исходных данных).
 
 ## Как фронту получать данные
-Опрос `GET /api/snapshot` раз в 1 с с заголовком `If-None-Match: "<version>"`.
+Опрос `GET /api/snapshot` раз в 1 с с заголовком `If-None-Match: <ETag из прошлого ответа>`.
 Ничего не поменялось → `304` без тела. Поменялось → `200` с полным снимком и новым `ETag`.
 Правка файла видна на сервере за ~0,5 с → на экране ≤1,5 с.
 
@@ -29,6 +29,8 @@
   ],                                  // ids уже отсортированы: просроченные и срочные сверху, решённые внизу
   "counts": {"critical": 0, ...},     // без «решённых, но ещё висящих» — для счётчиков в шапке
   "incidents": {"INC...": Incident},  // ВСЕ инциденты из файла (для поиска/фильтров), не только из групп
+  "actions": [Action, ...],           // очередь «Что делать сейчас», уже отсортирована
+  "boot_id": "a1b2c3d4",              // меняется при перезапуске сервера → сбросить счётчик событий
   "events": [Event, ...],             // последние 50, старые → новые
   "last_event_seq": 4
 }
@@ -63,6 +65,11 @@
   "hash": "a1b2c3d4e5f6",             // меняется при любой правке записи
   "groups": ["critical", "coordinators"], // во всех, где показывать; «также в: …» = groups минус текущая
   "resolved_in": ["critical"],        // в этих группах карточка «решён» (зелёная), а не активная
+  "forecast": {                       // только у активных со сроком, иначе null
+    "progress": 0.83,                 // доля истёкшего срока (может быть > 1)
+    "level": "breach",                // ok | risk (≥75%) | breach (прогноз: не успеют) | overdue
+    "eta": "...", "median_minutes": 155, "basis": "медиана по 4 решённым (приоритет)"
+  },
   "ai": {
     "source": "rules",                // rules | gigachat | cache
     "summary": "Короткая выжимка",
@@ -75,6 +82,17 @@
 }
 ```
 Оставшееся время: `deadline - (Date.now() + clock_offset_ms)`. Отрицательное → «просрочен на …».
+
+## Action
+```jsonc
+{
+  "id": "route:INC...", "kind": "route",   // route — передать от координаторов; escalate — эскалировать горящий срок
+  "incident_id": "INC...", "title": "Передать в «КЦ ДОИ VMWare»", "reason": "...",
+  "target_team": "КЦ ДОИ VMWare", "confidence": 0.45,
+  "draft": "Коллеги, передаём вам…"        // готовый текст передачи/эскалации для копирования
+}
+```
+Порядок: критические первыми, внутри — по оставшемуся времени.
 
 ## Event
 ```jsonc
@@ -102,3 +120,31 @@ priority_changed, deadline_changed, team_changed, assignee_changed, status_chang
 - `GET /api/incidents/{id}` — Incident + `raw` (исходная запись из файла) для панели деталей.
 - `GET /api/events?after=<seq>` — события после seq.
 - `GET /api/health` — статус файла и версия.
+
+
+## Смена: общие тревоги и «в работе» (с ноября: стена + АРМ)
+В снимке:
+```jsonc
+"alerts": [{"key": "critical:INC…", "group": "critical", "incident_id": "INC…",
+            "since": "…", "acked_by": "Ольга Новикова" | null, "acked_at": "…" | null}],  // критические первыми
+"claims": {"INC…": {"by": "Ольга Новикова", "at": "…"}},
+"coordinators": ["Ольга Новикова", …],   // кто выходил на смену
+"teams": ["КЦ ДОИ VMWare", …]            // для выбора команды при передаче
+```
+Incident: `work_log: [{at, author, action: assign|state|priority|deadline|comment|escalate, text}]`.
+Event: `by` — автор правки (если правка пришла из АРМ/ITSM), новые типы `comment`, `escalated`.
+
+## Действия (пишут в файл инцидентов; ответ — обновлённый Incident)
+| Метод | Тело | Что делает |
+|---|---|---|
+| `POST /api/alerts/ack` | `{key, by}` | «Принял» — баннер пропадает на всех экранах |
+| `POST /api/incidents/{id}/claim` / `DELETE` | `{by}` | взять в работу / отпустить |
+| `POST /api/itsm/{id}/assign` | `{team, assignee?, comment?, by}` | передать в команду (Выполняется → Назначен) |
+| `POST /api/itsm/{id}/state` | `{state_id, reason?, comment?, by}` | смена статуса по `transitions` |
+| `POST /api/itsm/{id}/priority` | `{priority_id, recalc_deadline?, comment?, by}` | приоритет (+ срок по SLA) |
+| `POST /api/itsm/{id}/deadline` | `{deadline (ISO UTC), comment?, by}` | срок |
+| `POST /api/itsm/{id}/comment` | `{text, by}` | комментарий в журнал |
+| `POST /api/itsm/{id}/escalate` | `{comment?, by}` | эскалация (в журнал) |
+| `GET /api/meta` | — | статусы, переходы, приоритеты, SLA, команды |
+| `GET /api/export` / `POST /api/import` | — / JSON-файл | скачать / заменить файл (старый → `cache/backups`) |
+Ошибки: 400 (нельзя по правилам), 404, 409 (файл сейчас битый/занят — правка не сохранена).

@@ -14,10 +14,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import adapter
+from .actions import build_actions
+from . import ai as ai_layer
 from .ai import enrich
 from .clock import Clock
 from .config import Rules, Settings
+from .desk import DeskState
 from .diff import DONE_KINDS, diff
+from .forecast import forecast_all
 from .groups import assign_groups
 
 AI_REFRESH_SECONDS = 30
@@ -28,17 +32,20 @@ def _utcnow() -> datetime:
 
 
 class Store:
-    def __init__(self, settings: Settings, rules: Rules, clock: Clock | None = None):
+    def __init__(self, settings: Settings, rules: Rules, clock: Clock | None = None, desk: DeskState | None = None):
         self.settings = settings
         self.rules = rules
         self.clock = clock or Clock(settings.time_mode, adapter.parse_dt(settings.export_now))
         self.lock = threading.Lock()
+        self.desk = desk or DeskState(None)
+        self.desk.now_fn = self.clock.now
 
         self.incidents: dict[str, dict] = {}
         self.raw_by_id: dict[str, dict] = {}
         self.groups: dict[str, list[str]] = {g.key: [] for g in rules.groups}
         self.seen_resolved: dict[str, datetime] = {}
         self.events: deque[dict] = deque(maxlen=300)
+        self.actions: list[dict] = []
         self.seq = 0
         self.version = 0
         self.loaded = False
@@ -85,6 +92,11 @@ class Store:
 
         self._bytes_hash = h
         self._data = data
+        if self.loaded and self._is_replaced(new_incidents):
+            # Файл подменили целиком (другая выгрузка/демо-файл): новая точка отсчёта, без лавины событий
+            self.clock.reanchor(adapter.export_moment(data))
+            self.seen_resolved.clear()
+            self.loaded = False
         self.clock.set_anchor_if_empty(adapter.export_moment(data))
         with self.lock:
             self.raw_by_id = {
@@ -103,6 +115,12 @@ class Store:
             if was_problem:
                 self.version += 1
         return True
+
+    def _is_replaced(self, new_incidents: dict[str, dict]) -> bool:
+        old_ids, new_ids = set(self.incidents), set(new_incidents)
+        if not old_ids or not new_ids:
+            return False
+        return len(old_ids & new_ids) / max(len(old_ids), len(new_ids)) < 0.5
 
     def _set_file_problem(self, status: str, error: str) -> None:
         with self.lock:
@@ -123,8 +141,7 @@ class Store:
             elif inc["state_kind"] == "active":
                 self.seen_resolved.pop(inc_id, None)
         self.groups = assign_groups(new_incidents, self.rules, now, self.seen_resolved)
-        enrich(new_incidents, now, self.rules)
-        self._last_ai = time.monotonic()
+        self._derive(new_incidents, now)
 
         if self.loaded:
             stamp = adapter.iso(_utcnow())
@@ -135,7 +152,15 @@ class Store:
                 self.events.append(ev)
         self.incidents = new_incidents
         self.loaded = True
+        self.desk.sync_alerts(new_incidents)
         self.version += 1
+
+    def _derive(self, incidents: dict[str, dict], now: datetime) -> None:
+        """Производные поля: прогноз срока, ИИ, очередь действий."""
+        forecast_all(incidents, now)
+        enrich(incidents, now, self.rules)
+        self.actions = build_actions(incidents, now)
+        self._last_ai = time.monotonic()
 
     def _regroup_if_needed(self, force: bool) -> bool:
         """Время идёт: решённые критические уходят из группы, риск растёт. Пересчитываем без перечитывания."""
@@ -148,9 +173,10 @@ class Store:
             after = {i: (tuple(x["groups"]), tuple(x["resolved_in"])) for i, x in self.incidents.items()}
             changed = before != after or groups != self.groups
             self.groups = groups
-            if force or time.monotonic() - self._last_ai > AI_REFRESH_SECONDS:
-                enrich(self.incidents, now, self.rules)
-                self._last_ai = time.monotonic()
+            if changed:
+                self.desk.sync_alerts(self.incidents)
+            if force or ai_layer.consume_dirty() or time.monotonic() - self._last_ai > AI_REFRESH_SECONDS:
+                self._derive(self.incidents, now)
                 changed = True
             if changed:
                 self.version += 1
@@ -175,9 +201,36 @@ class Store:
                 "groups": groups,
                 "counts": {g["key"]: sum(1 for i in g["ids"] if g["key"] not in self.incidents[i]["resolved_in"]) for g in groups},
                 "incidents": self.incidents,
+                "actions": self.actions,
+                "ai_status": ai_layer.status(),
+                **self.desk.export(),          # alerts, claims, coordinators — общее состояние смены
+                "teams": self._teams(),
                 "events": list(self.events)[-events_limit:],
                 "last_event_seq": self.seq,
             }
+
+    def _teams(self) -> list[str]:
+        teams = {i["team"] for i in self.incidents.values() if i.get("team") and i["team"] != "AutoClosedMi"}
+        teams.add(self.rules.coordinators_team)
+        return sorted(teams, key=str.casefold)
+
+    # ---------- действия смены (общие для стены и всех АРМ) ----------
+    def ack(self, key: str, by: str) -> bool:
+        ok = self.desk.ack(key, by)
+        if ok:
+            with self.lock:
+                self.version += 1
+        return ok
+
+    def claim(self, inc_id: str, by: str) -> None:
+        self.desk.claim(inc_id, by)
+        with self.lock:
+            self.version += 1
+
+    def release(self, inc_id: str) -> None:
+        if self.desk.release(inc_id):
+            with self.lock:
+                self.version += 1
 
     def events_after(self, seq: int) -> list[dict]:
         with self.lock:

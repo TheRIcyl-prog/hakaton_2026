@@ -28,12 +28,12 @@ class Settings:
     incidents_file: Path = field(default_factory=lambda: _path(os.getenv("INCIDENTS_FILE", "data/incidents.json")))
     rules_file: Path = field(default_factory=lambda: _path(os.getenv("RULES_FILE", "config/rules.yaml")))
     itsm_url_template: str = field(
-        default_factory=lambda: os.getenv("ITSM_URL_TEMPLATE", "https://itsm.example.mts.ru/incident/{id}")
+        default_factory=lambda: os.getenv("ITSM_URL_TEMPLATE", "/itsm/{id}")
     )
     time_mode: str = field(default_factory=lambda: os.getenv("TIME_MODE", "export"))
     export_now: str | None = field(default_factory=lambda: os.getenv("EXPORT_NOW") or None)
     poll_interval: float = field(default_factory=lambda: float(os.getenv("POLL_INTERVAL", "0.5")))
-    frontend_dist: Path = field(default_factory=lambda: ROOT / "frontend" / "dist")
+    frontend_dir: Path = field(default_factory=lambda: ROOT / "frontend")
 
 
 @dataclass
@@ -54,6 +54,8 @@ class Rules:
     priority_text: dict[str, int]
     coordinators_team: str
     groups: list[GroupRule]
+    transitions: dict[int, list[int]] = field(default_factory=dict)
+    sla_hours: dict[int, float] = field(default_factory=dict)
 
     def state_kind(self, state_id: int | None) -> str:
         if state_id is None or state_id not in self.states:
@@ -86,4 +88,6 @@ def load_rules(path: Path) -> Rules:
         priority_text=dict(raw.get("priority_text", {})),
         coordinators_team=raw["coordinators_team"],
         groups=groups,
+        transitions={int(k): [int(x) for x in (v or [])] for k, v in (raw.get("transitions") or {}).items()},
+        sla_hours={int(k): float(v) for k, v in (raw.get("sla_hours") or {}).items()},
     )

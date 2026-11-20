@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ITSM · карточка инцидента</title>
+  <style>
+    :root { --bg:#eef1f5; --panel:#fff; --line:#d8dde6; --text:#1d2330; --muted:#6b7385; --accent:#2b5fd9; --red:#d4002a; --green:#0f8a5f; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 "Segoe UI", Arial, sans-serif; }
+    .note { background:#fff4d6; color:#7a5a00; border-bottom:1px solid #f0d690; padding:7px 20px; font-size:12px; }
+    header { background:#24324d; color:#fff; padding:10px 20px; display:flex; gap:16px; align-items:center; }
+    header b { font-size:16px; }
+    header .sp { flex:1; }
+    header span { color:#aab6cf; }
+    header input { background:#33456a; border:1px solid #4b5f8a; color:#fff; border-radius:4px; padding:5px 8px; width:200px; }
+    main { max-width:1200px; margin:18px auto; padding:0 20px; display:grid; grid-template-columns: 1.5fr 1fr; gap:16px; }
+    section { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:16px 18px; }
+    h1 { font-size:20px; margin:0 0 6px; }
+    h2 { font-size:12px; text-transform:uppercase; color:var(--muted); letter-spacing:.4px; margin:18px 0 8px; }
+    h2:first-child { margin-top:0; }
+    .id { color:var(--muted); }
+    .badges { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0 4px; }
+    .badge { padding:2px 8px; border-radius:4px; background:#e3ebff; color:var(--accent); font-weight:600; font-size:12px; }
+    .badge.crit { background:#ffe0e6; color:var(--red); }
+    .badge.done { background:#dcf5ea; color:var(--green); }
+    dl { display:grid; grid-template-columns:150px 1fr; gap:5px 12px; margin:0; }
+    dt { color:var(--muted); }
+    dd { margin:0; }
+    .form { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:4px 0 10px; }
+    .form select, .form input, .form textarea { border:1px solid var(--line); border-radius:4px; padding:6px 8px; font:inherit; background:#fff; }
+    .form select { min-width:260px; }
+    .form textarea { width:100%; }
+    button { border:1px solid var(--accent); background:var(--accent); color:#fff; padding:6px 12px; border-radius:4px; cursor:pointer; font:inherit; }
+    button.sec { background:#f6f8fb; color:var(--text); border-color:var(--line); }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .hint { color:var(--muted); font-size:12px; }
+    .log { display:flex; flex-direction:column; gap:8px; max-height:360px; overflow:auto; }
+    .log div { border-left:3px solid var(--line); padding-left:10px; font-size:13px; }
+    .log small { color:var(--muted); }
+    .msg { padding:8px 12px; border-radius:4px; margin-bottom:10px; display:none; }
+    .msg.ok { display:block; background:#dcf5ea; color:var(--green); }
+    .msg.err { display:block; background:#ffe0e6; color:var(--red); }
+    pre { background:#f6f8fb; border:1px solid var(--line); padding:10px; border-radius:4px; overflow:auto; font-size:11px; max-height:300px; }
+    details summary { cursor:pointer; color:var(--muted); }
+    .err { padding:40px; text-align:center; color:var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="note">Мини-ITSM для хакатона. Изменения записываются в файл инцидентов, и дашборд (видеостена и АРМ) видит их сразу. В рабочей версии ссылка ведёт в вашу ITSM по шаблону <code>ITSM_URL_TEMPLATE</code>.</div>
+  <header><b>ITSM</b><span>Управление инцидентами · Массовые инциденты</span><div class="sp"></div>
+    <label><span>Вы:</span> <input id="me" placeholder="имя координатора"></label></header>
+  <div id="root" class="err">Загрузка…</div>
+
+  <script type="module">
+    import { api, getMe, setMe } from "/js/api.js";
+    import { esc } from "/js/format.js";
+
+    const id = decodeURIComponent(location.pathname.split("/").pop());
+    const root = document.getElementById("root");
+    const meInput = document.getElementById("me");
+    meInput.value = getMe();
+    meInput.onchange = () => setMe(meInput.value.trim());
+
+    const dt = (iso) => iso ? new Date(iso).toLocaleString("ru-RU", { timeZone: "Europe/Moscow", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) + " МСК" : "—";
+    // datetime-local ⇄ UTC ISO, поле в МСК (UTC+3)
+    const toLocalMsk = (iso) => iso ? new Date(Date.parse(iso) + 3 * 3600e3).toISOString().slice(0, 16) : "";
+    const fromLocalMsk = (v) => new Date(Date.parse(v + ":00Z") - 3 * 3600e3).toISOString().replace(".000Z", "Z");
+
+    let meta = null, inc = null, lastHash = null, message = null;
+
+    async function load() {
+      try {
+        meta = meta || await api.meta();
+        const fresh = await api.incident(id);
+        if (fresh.hash !== lastHash) { inc = fresh; lastHash = fresh.hash; render(); }
+      } catch (e) {
+        root.className = "err";
+        root.textContent = `Инцидент ${id} не найден в текущем файле`;
+      }
+    }
+
+    function render() {
+      document.title = `${inc.id} · ITSM`;
+      root.className = "";
+      const transitions = meta.transitions[inc.state_id] || [];
+      const route = inc.ai && inc.ai.route;
+      const suggested = route ? [route.team, ...route.alternatives.map((a) => a.team)] : [];
+      const teams = [...suggested, ...meta.teams.filter((t) => !suggested.includes(t))].filter((t) => t !== inc.team);
+      const doneState = (s) => [7, 10, 20].includes(Number(s));
+      root.innerHTML = `<main>
+        <section>
+          <div class="id">${esc(inc.id)} · МИ · ${esc(inc.product || "")}</div>
+          <h1>${esc(inc.title)}</h1>
+          <div class="badges">
+            <span class="badge ${["resolved","closed","research"].includes(inc.state_kind) ? "done" : ""}">${esc(inc.state)}</span>
+            <span class="badge ${inc.priority_level === "critical" ? "crit" : ""}">${esc(inc.priority)}</span>
+            <span class="badge">${esc(inc.team || "—")}</span>
+          </div>
+          <div class="msg ${message ? message.kind : ""}">${message ? esc(message.text) : ""}</div>
+
+          <h2>Назначить группу</h2>
+          ${inc.state_kind === "closed" ? `<div class="hint">Инцидент закрыт — переназначение невозможно, повтор = новый инцидент.</div>` :
+            inc.state_kind === "resolved" ? `<div class="hint">Инцидент завершён — чтобы переназначить, сначала верните его в работу.</div>` : `
+          <form class="form" id="f-assign">
+            <select name="team" required>
+              ${route ? "" : `<option value="" selected disabled>— выберите команду —</option>`}
+              ${teams.map((t, i) => `<option value="${esc(t)}" ${route && i === 0 ? "selected" : ""}>${route && suggested.includes(t) ? "★ " : ""}${esc(t)}</option>`).join("")}
+            </select>
+            <input name="assignee" placeholder="исполнитель (необязательно)">
+            <button>Назначить</button>
+          </form>
+          ${route ? `<div class="hint">★ Рекомендация по похожим случаям: «${esc(route.team)}» — ${esc(route.reason)}</div>` : ""}`}
+
+          <h2>Статус</h2>
+          ${transitions.length ? `<form class="form" id="f-state">
+            ${transitions.map((s) => `<button type="button" class="sec" data-state="${s}">→ ${esc(meta.states[s])}</button>`).join("")}
+            <select name="reason" title="Подстатус (для завершения)">
+              <option>Постоянное решение</option><option>Внешняя обработка</option><option>Инцидент самоустранился</option><option>Дубль</option><option>Инцидент не подтверждён</option>
+            </select>
+          </form><div class="hint">Подстатус используется при переводе в «Завершен», «Закрыт», «Исследование ситуации».</div>`
+            : `<div class="hint">Финальный статус — переходов нет.</div>`}
+
+          <h2>Приоритет и срок</h2>
+          <form class="form" id="f-prio">
+            <select name="priority">${Object.entries(meta.priorities).sort((a, b) => b[0] - a[0]).map(([k, v]) => `<option value="${k}" ${Number(k) === inc.priority_id ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>
+            <label class="hint"><input type="checkbox" name="recalc"> пересчитать срок по SLA</label>
+            <button>Сохранить приоритет</button>
+          </form>
+          <form class="form" id="f-deadline">
+            <input type="datetime-local" name="deadline" value="${toLocalMsk(inc.deadline)}"> <span class="hint">МСК</span>
+            <button>Сохранить срок</button>
+          </form>
+
+          <h2>Комментарий</h2>
+          <form class="form" id="f-comment"><textarea name="text" rows="2" placeholder="Что сделано, с кем договорились…"></textarea><button>Добавить в журнал</button></form>
+          ${inc.state_kind === "active" ? `<button class="sec" id="b-escalate">Эскалировать руководителю группы</button>` : ""}
+
+          <h2>Описание</h2><div>${esc(inc.description || "—")}</div>
+          ${inc.solution ? `<h2>Решение</h2><div>${esc(inc.solution)}</div>` : ""}
+        </section>
+        <section>
+          <h2>Атрибуты</h2>
+          <dl>
+            <dt>Продукт</dt><dd>${esc(inc.product || "—")}</dd>
+            <dt>Сервис</dt><dd>${esc(inc.service || "—")}</dd>
+            <dt>Группа</dt><dd>${esc(inc.team || "—")}</dd>
+            <dt>Исполнитель</dt><dd>${esc(inc.assignee || "—")}</dd>
+            <dt>Зарегистрирован</dt><dd>${dt(inc.created_at)}</dd>
+            <dt>Срок решения</dt><dd>${dt(inc.deadline)}</dd>
+            <dt>Завершён</dt><dd>${dt(inc.resolved_at)}</dd>
+            <dt>Влияние / срочность</dt><dd>${esc(inc.impact || "—")} / ${esc(inc.urgency || "—")}</dd>
+            <dt>Тип сервиса</dt><dd>${esc(inc.service_type || "—")}</dd>
+            <dt>Канал</dt><dd>${esc(inc.channel || "—")}</dd>
+            <dt>Инициатор</dt><dd>${esc(inc.initiator || "—")}</dd>
+          </dl>
+          <h2>Журнал работ</h2>
+          <div class="log">${inc.work_log.length ? inc.work_log.slice().reverse().map((w) => `<div><small>${dt(w.at)} · ${esc(w.author || "")}</small><br>${esc(w.text || "")}</div>`).join("") : `<span class="hint">записей нет</span>`}</div>
+          <h2>Исходная запись</h2>
+          <details><summary>показать JSON</summary><pre>${esc(JSON.stringify(inc.raw, null, 2))}</pre></details>
+        </section>
+      </main>`;
+      bind(doneState);
+    }
+
+    async function run(fn, okText) {
+      if (!getMe()) { message = { kind: "err", text: "Укажите своё имя вверху справа — оно попадёт в журнал работ" }; render(); meInput.focus(); return; }
+      try {
+        inc = await fn();
+        lastHash = inc.hash;
+        message = { kind: "ok", text: okText };
+      } catch (e) {
+        message = { kind: "err", text: e.message };
+      }
+      render();
+    }
+
+    function bind(doneState) {
+      const f = (sel) => document.querySelector(sel);
+      if (f("#f-assign")) f("#f-assign").onsubmit = (e) => { e.preventDefault(); const t = e.target.team.value;
+        run(() => api.assign(id, t, null, e.target.assignee.value.trim() || null), `Назначен в «${t}»`); };
+      document.querySelectorAll("[data-state]").forEach((b) => b.onclick = () => {
+        const s = Number(b.dataset.state);
+        run(() => api.state(id, s, null, doneState(s) ? f("#f-state").reason.value : null), `Статус: ${meta.states[s]}`);
+      });
+      f("#f-prio").onsubmit = (e) => { e.preventDefault();
+        run(() => api.priority(id, Number(e.target.priority.value), e.target.recalc.checked), "Приоритет сохранён"); };
+      f("#f-deadline").onsubmit = (e) => { e.preventDefault(); if (!e.target.deadline.value) return;
+        run(() => api.deadline(id, fromLocalMsk(e.target.deadline.value)), "Срок сохранён"); };
+      f("#f-comment").onsubmit = (e) => { e.preventDefault(); const t = e.target.text.value.trim(); if (!t) return;
+        run(() => api.comment(id, t), "Комментарий добавлен"); };
+      if (f("#b-escalate")) f("#b-escalate").onclick = () => run(() => api.escalate(id, null), "Эскалация записана");
+    }
+
+    load();
+    setInterval(load, 2000); // если файл поменяли руками или с АРМ — карточка обновится
+  </script>
+</body>
+</html>

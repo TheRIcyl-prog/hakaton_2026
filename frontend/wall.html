@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Видеостена · массовые инциденты · МТС</title>
+  <link rel="icon" id="favicon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="wall">
+  <header class="topbar" id="topbar">
+    <div class="brand">
+      <div class="brand-mark">МТС</div>
+      <div class="brand-title">Массовые инциденты<br><span>мониторинг и координация</span></div>
+    </div>
+    <nav class="counters" id="counters"></nav>
+    <div class="topbar-right">
+      <div class="clock" id="clock"></div>
+      <div class="status" id="status"></div>
+      <button class="icon-btn" id="sound-btn" title="Звук и голос на стене"></button>
+    </div>
+  </header>
+
+  <div id="filebar" class="filebar hidden"></div>
+  <section id="alerts" class="alerts"></section>
+
+  <main class="board" id="board"></main>
+
+  <footer class="feed" id="feed"></footer>
+  <div class="toasts" id="toasts"></div>
+
+  <script type="module" src="/js/wall.js"></script>
+</body>
+</html>

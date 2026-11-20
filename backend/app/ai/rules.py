@@ -21,6 +21,16 @@ def _summary(inc: dict) -> str | None:
     return first[:200]
 
 
+def _cases(n: int) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        word = "похожий случай"
+    elif 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        word = "похожих случая"
+    else:
+        word = "похожих случаев"
+    return f"{n} {word}"
+
+
 def _route(inc: dict, incidents: dict[str, dict], rules: Rules) -> dict | None:
     coord = norm_team(rules.coordinators_team)
     scores: dict[str, float] = defaultdict(float)
@@ -56,7 +66,7 @@ def _route(inc: dict, incidents: dict[str, dict], rules: Rules) -> dict | None:
     return {
         "team": team,
         "confidence": round(best / total, 2),
-        "reason": f"{len(similar[team])} похожих инцидента(ов) по продукту/сервису «{inc.get('service') or inc.get('product')}» решала эта команда",
+        "reason": f"{_cases(len(similar[team]))} по «{inc.get('service') or inc.get('product')}» вела эта команда",
         "alternatives": [{"team": t, "score": round(v / total, 2)} for t, v in ranked[1:4]],
         "similar_ids": ids,
     }

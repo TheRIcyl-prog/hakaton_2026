@@ -107,3 +107,14 @@ def test_snapshot_shape(make_store):
     assert [g["key"] for g in snap["groups"]] == ["critical", "coordinators", "high", "research"]
     assert snap["counts"] == {"critical": 1, "coordinators": 1, "high": 0, "research": 0}
     assert snap["incidents"]["A"]["ai"]["route"] is None  # некого предложить — других инцидентов нет
+
+
+def test_file_replaced_resets_baseline(make_store):
+    store, f = make_store([make("A"), make("B"), make("C")])
+    write(f, [make("X", 0, 4), make("Y"), make("Z")])
+    store.poll()
+    assert list(store.events) == []  # подмена файла — новая точка отсчёта, не 6 событий
+    assert set(store.incidents) == {"X", "Y", "Z"}
+    write(f, [make("X", 0, 4), make("Y", 0, 3), make("Z")])
+    store.poll()
+    assert "priority_changed" in types(store)

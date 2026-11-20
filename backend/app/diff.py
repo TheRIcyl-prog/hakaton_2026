@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .actions import fmt_msk
+
 FIELD_EVENTS = [
     # (поле, тип события, подпись)
     ("priority", "priority_changed", "приоритет"),
@@ -49,9 +51,15 @@ def diff(old: dict[str, dict], new: dict[str, dict]) -> list[dict]:
                 continue
             for field, etype, label in FIELD_EVENTS:
                 if prev.get(field) != inc.get(field):
+                    show = fmt_msk if field == "deadline" else (lambda v: v or "—")
                     events.append(
-                        _ev(etype, inc, f"{label}: {prev.get(field) or '—'} → {inc.get(field) or '—'}", prev.get(field), inc.get(field))
+                        _ev(etype, inc, f"{label}: {show(prev.get(field))} → {show(inc.get(field))}", prev.get(field), inc.get(field))
                     )
+            # Новые записи журнала работ: комментарий / эскалация (остальное покрыто событиями полей)
+            for entry in inc.get("work_log", [])[len(prev.get("work_log", [])):]:
+                if entry.get("action") in ("comment", "escalate"):
+                    events.append(_ev("escalated" if entry["action"] == "escalate" else "comment", inc,
+                                      ("эскалирован: " if entry["action"] == "escalate" else "комментарий: ") + (entry.get("text") or "")))
             pk, nk = prev.get("state_kind"), inc.get("state_kind")
             if pk == "active" and nk in DONE_KINDS:
                 events.append(_ev("resolved", inc, f"решён ({inc.get('state')})", pk, nk))
@@ -73,6 +81,12 @@ def diff(old: dict[str, dict], new: dict[str, dict]) -> list[dict]:
             events.append(_ev("to_coordinators", inc, "назначен на координаторов", alert="coordinators"))
         if _in(prev, "coordinators") and not _in(inc, "coordinators"):
             events.append(_ev("from_coordinators", inc, f"ушёл от координаторов → {inc.get('team') or '—'}"))
+
+    # Подписываем события автором правки (последняя новая запись журнала работ)
+    for ev in events:
+        inc, prev = new.get(ev["incident_id"]), old.get(ev["incident_id"])
+        if inc and prev and len(inc.get("work_log", [])) > len(prev.get("work_log", [])):
+            ev["by"] = inc["work_log"][-1].get("author")
 
     for inc_id, prev in old.items():
         if inc_id not in new:

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>АРМ координатора МИ · МТС</title>
+  <link rel="icon" id="favicon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar" id="topbar">
+    <div class="brand">
+      <div class="brand-mark">МТС</div>
+      <div class="brand-title">АРМ координатора<br><span>массовых инцидентов</span></div>
+    </div>
+    <nav class="counters" id="counters"></nav>
+    <div class="topbar-right">
+      <input id="search" class="search" type="search" placeholder="Поиск: номер, продукт, команда…  ( / )" autocomplete="off">
+      <div class="clock" id="clock"></div>
+      <div class="status" id="status"></div>
+      <div class="menu">
+        <button class="icon-btn" id="me" title="Сменить имя"></button>
+        <button class="icon-btn" id="sound-btn" title="Звук и голос"></button>
+        <a class="icon-btn" href="/wall" target="_blank" title="Открыть экран видеостены">🖥 Стена</a>
+        <button class="icon-btn" id="export-btn" title="Скачать текущий файл инцидентов">⭳ Экспорт</button>
+        <button class="icon-btn" id="import-btn" title="Загрузить файл инцидентов">⭱ Импорт</button>
+        <input type="file" id="import-input" accept=".json,application/json" hidden>
+      </div>
+    </div>
+  </header>
+
+  <div id="filebar" class="filebar hidden"></div>
+  <section id="alerts" class="alerts"></section>
+
+  <section class="actions" id="actions-wrap">
+    <div class="actions-title">Что делать сейчас</div>
+    <div class="actions-list" id="actions"></div>
+  </section>
+
+  <main class="board" id="board"></main>
+
+  <footer class="feed" id="feed"></footer>
+
+  <aside class="drawer hidden" id="drawer"></aside>
+  <div class="modal hidden" id="modal"></div>
+  <div class="toasts" id="toasts"></div>
+
+  <div class="overlay" id="start-overlay">
+    <div class="start-card">
+      <div class="brand-mark big">МТС</div>
+      <h1>Начать смену</h1>
+      <p>Представьтесь — имя видно коллегам и на видеостене: кто принял тревогу и кто ведёт инцидент.</p>
+      <input id="me-input" class="name-input" placeholder="Имя и фамилия" autocomplete="name">
+      <p class="small">Браузер разрешает звук, голос и уведомления только после нажатия кнопки.</p>
+      <button class="btn btn-primary big" id="start-btn">Начать смену</button>
+      <button class="btn btn-ghost" id="start-silent">Без звука</button>
+    </div>
+  </div>
+
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>

@@ -21,6 +21,12 @@ class Clock:
             self._anchor = anchor
             self._started = time.monotonic()
 
+    def reanchor(self, anchor: datetime | None) -> None:
+        """Файл подменили целиком — «сейчас» снова = момент новой выгрузки."""
+        if anchor is not None:
+            self._anchor = anchor
+            self._started = time.monotonic()
+
     @property
     def anchor(self) -> datetime | None:
         return self._anchor

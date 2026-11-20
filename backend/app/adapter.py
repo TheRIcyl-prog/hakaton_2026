@@ -112,6 +112,21 @@ def content_hash(raw: dict) -> str:
     return hashlib.sha1(json.dumps(raw, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:12]
 
 
+def _work_log(value: Any) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    out = []
+    for e in value[-30:]:
+        if isinstance(e, dict):
+            out.append({
+                "at": iso(parse_dt(e.get("at"))),
+                "author": to_str(e.get("author")),
+                "action": to_str(e.get("action")),
+                "text": to_str(e.get("text")),
+            })
+    return out
+
+
 def adapt_one(raw: dict, rules: Rules, itsm_template: str) -> dict | None:
     if not isinstance(raw, dict):
         return None
@@ -171,6 +186,8 @@ def adapt_one(raw: dict, rules: Rules, itsm_template: str) -> dict | None:
         "is_effect": bool(to_bool(raw.get("isEffect"))),
         "is_need_up": to_bool(raw.get("isNeedUp")),
         "itsm_url": itsm_url,
+        # Журнал работ — наше поле (менторы разрешили добавлять поля). Пишет его itsm.py.
+        "work_log": _work_log(raw.get("workLog")),
         "hash": content_hash(raw),
     }
 
