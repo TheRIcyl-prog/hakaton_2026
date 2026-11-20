@@ -38,10 +38,13 @@ def _ev(type_: str, inc: dict, text: str, before: Any = None, after: Any = None,
     }
 
 
-def diff(old: dict[str, dict], new: dict[str, dict]) -> list[dict]:
+def diff(old: dict[str, dict], new: dict[str, dict], ids=None) -> list[dict]:
+    """ids — только эти инциденты (изменённые и пропавшие); None — все."""
     events: list[dict] = []
-    for inc_id, inc in new.items():
-        prev = old.get(inc_id)
+    if ids is None:
+        ids = set(new) | set(old)
+    for inc_id in sorted(i for i in ids if i in new):
+        inc, prev = new[inc_id], old.get(inc_id)
         if prev is None:
             events.append(_ev("new", inc, f"новый инцидент · {inc.get('priority') or ''} · {inc.get('team') or ''}"))
         else:
@@ -60,6 +63,12 @@ def diff(old: dict[str, dict], new: dict[str, dict]) -> list[dict]:
                 if entry.get("action") in ("comment", "escalate"):
                     events.append(_ev("escalated" if entry["action"] == "escalate" else "comment", inc,
                                       ("эскалирован: " if entry["action"] == "escalate" else "комментарий: ") + (entry.get("text") or "")))
+            pc, nc = (prev.get("coordinator") or {}).get("name"), (inc.get("coordinator") or {}).get("name")
+            if pc != nc:
+                if nc:
+                    events.append(_ev("taken", inc, f"взят в работу: {nc}" + (f" (был у {pc})" if pc else ""), pc, nc))
+                else:
+                    events.append(_ev("released", inc, f"отпущен: {pc}", pc, None))
             pk, nk = prev.get("state_kind"), inc.get("state_kind")
             if pk == "active" and nk in DONE_KINDS:
                 events.append(_ev("resolved", inc, f"решён ({inc.get('state')})", pk, nk))
@@ -88,7 +97,6 @@ def diff(old: dict[str, dict], new: dict[str, dict]) -> list[dict]:
         if inc and prev and len(inc.get("work_log", [])) > len(prev.get("work_log", [])):
             ev["by"] = inc["work_log"][-1].get("author")
 
-    for inc_id, prev in old.items():
-        if inc_id not in new:
-            events.append(_ev("removed", prev, "пропал из файла"))
+    for inc_id in sorted(i for i in ids if i in old and i not in new):
+        events.append(_ev("removed", old[inc_id], "пропал из файла"))
     return events

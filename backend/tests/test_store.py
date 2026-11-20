@@ -118,3 +118,92 @@ def test_file_replaced_resets_baseline(make_store):
     write(f, [make("X", 0, 4), make("Y", 0, 3), make("Z")])
     store.poll()
     assert "priority_changed" in types(store)
+
+
+# ---------- лёгкий снимок, поиск и фильтры по всем инцидентам (decisions.md, п. 3, 6) ----------
+def test_snapshot_has_only_visible_and_outside_counter(make_store):
+    store, _ = make_store([make("K", 0, 4), make("M", 0, 2), make("L", 2, 1), make("R", 7, 2)])
+    snap = store.snapshot()
+    assert set(snap["incidents"]) == {"K"} and snap["incidents_scope"] == "visible"
+    assert snap["outside_active"] == 2 and snap["active_total"] == 3 and snap["total_incidents"] == 4
+
+
+def test_taken_incident_outside_groups_is_visible(make_store):
+    store, _ = make_store([make("M", 0, 2, coordinator={"name": "Ольга", "at": "2026-11-10T11:00:00Z"})])
+    snap = store.snapshot()
+    assert "M" in snap["incidents"] and snap["claims"]["M"]["by"] == "Ольга"
+
+
+def test_search_by_text_number_and_filters(make_store):
+    store, _ = make_store([
+        make("INC1", 0, 2, productName="Зеркальце", header="Не доставляются сообщения"),
+        make("INC2", 7, 2, productName="Зеркальце", header="Сообщения с одной галочкой"),
+        make("INC3", 2, 3, team="КЦ Ступа", assignedEmployee=None),
+        make("INC4", 0, 1, deadline="2026-11-10T11:00:00Z", serviceType="Технологический"),
+    ])
+    assert store.search("сообщения")["total"] == 2
+    assert store.search("сообщения", status="active")["total"] == 1
+    assert store.search("inc3")["items"][0]["id"] == "INC3"
+    assert [i["id"] for i in store.search(team="КЦ Ступа")["items"]] == ["INC3"]
+    assert [i["id"] for i in store.search(unassigned=True)["items"]] == ["INC3"]
+    assert [i["id"] for i in store.search(overdue=True)["items"]] == ["INC4"]
+    assert [i["id"] for i in store.search(product="Зеркальце", status="done")["items"]] == ["INC2"]
+    assert {i["id"] for i in store.search(service_type="internal")["items"]} == {"INC1", "INC2", "INC3", "INC4"}  # в make нет serviceType
+    assert store.search(service_type="client")["total"] == 0
+    assert [i["id"] for i in store.search(priority="3,4")["items"]] == ["INC3"]
+    res = store.search(limit=2)
+    assert res["total"] == 4 and len(res["items"]) == 2
+    assert res["items"][0]["state_kind"] == "active" and res["items"][0]["priority_id"] == 3  # активные, выше приоритет
+
+
+def test_search_untaken_and_coordinator(make_store):
+    store, _ = make_store([make("K", 0, 4), make("T", 0, 4, coordinator={"name": "Ольга", "at": None}), make("M", 0, 2)])
+    assert [i["id"] for i in store.search(untaken=True)["items"]] == ["K"]
+    assert [i["id"] for i in store.search(coordinator="ольга")["items"]] == ["T"]
+
+
+def test_coordinators_ordered_by_waiting_time(make_store):
+    store, _ = make_store([
+        make("NEW", 0, 4, COORD, lastAssignmentToTeamDateTime="2026-11-10T11:55:00Z"),
+        make("OLD", 0, 2, COORD, lastAssignmentToTeamDateTime="2026-11-10T11:10:00Z"),
+        make("MID", 2, 3, COORD, lastAssignmentToTeamDateTime="2026-11-10T11:30:00Z"),
+    ])
+    assert store.groups["coordinators"] == ["OLD", "MID", "NEW"]  # дольше ждёт — выше
+
+
+def test_research_newest_first(make_store):
+    store, _ = make_store([
+        make("R1", 20, 2, completionDate="2026-11-10T09:00:00Z"),
+        make("R2", 20, 2, completionDate="2026-11-10T11:00:00Z"),
+    ])
+    assert store.groups["research"] == ["R2", "R1"]
+
+
+def test_frequent_foreign_edits_are_coalesced(make_store):
+    store, f = make_store([make("A", 0, 2)])
+    store.settings.coalesce_seconds = 0.5
+    store._last_foreign -= 1            # с первой загрузки прошло больше 0,5 с
+    write(f, [make("A", 0, 3)])
+    assert store.poll()                 # первая правка — сразу
+    write(f, [make("A", 0, 4)])
+    assert not store.poll()             # вторая через миг — склеиваем
+    store._last_foreign -= 1
+    assert store.poll() and store.incidents["A"]["priority_id"] == 4
+
+
+def test_unchanged_records_are_not_re_adapted(make_store):
+    store, f = make_store([make("A"), make("B")])
+    a_obj = store.incidents["A"]
+    write(f, [make("A"), make("B", 0, 3)])
+    store.poll()
+    assert store.incidents["A"] is a_obj and store.refs.changed == {"B"}
+
+
+def test_snapshot_bytes_cached_per_version(make_store):
+    store, f = make_store([make("A", 0, 4)])
+    b1, v1 = store.snapshot_bytes(True)
+    b2, v2 = store.snapshot_bytes(True)
+    assert b1 is b2 and v1 == v2
+    write(f, [make("A", 0, 3)])
+    store.poll()
+    assert store.snapshot_bytes(True)[1] > v1

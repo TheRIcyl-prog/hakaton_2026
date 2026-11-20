@@ -32,7 +32,12 @@ class Settings:
     )
     time_mode: str = field(default_factory=lambda: os.getenv("TIME_MODE", "export"))
     export_now: str | None = field(default_factory=lambda: os.getenv("EXPORT_NOW") or None)
-    poll_interval: float = field(default_factory=lambda: float(os.getenv("POLL_INTERVAL", "0.5")))
+    poll_interval: float = field(default_factory=lambda: float(os.getenv("POLL_INTERVAL", "0.25")))
+    # Чужие правки файла применяем не чаще раза в столько секунд (частые сохранения редактора склеиваются)
+    coalesce_seconds: float = field(default_factory=lambda: float(os.getenv("COALESCE_SECONDS", "0.5")))
+    # Копии файла перед каждой записью из АРМ/ITSM (храним backups_keep последних)
+    backups_dir: Path = field(default_factory=lambda: _path(os.getenv("BACKUPS_DIR", "cache/backups")))
+    backups_keep: int = field(default_factory=lambda: int(os.getenv("BACKUPS_KEEP", "20")))
     frontend_dir: Path = field(default_factory=lambda: ROOT / "frontend")
 
 

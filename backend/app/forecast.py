@@ -1,57 +1,33 @@
 """Прогноз нарушения срока по истории: медиана времени решения (completionDate − submitDate).
 
 Медиану берём сначала по (команда, приоритет), если примеров ≥ MIN_SAMPLES, потом по приоритету,
-потом по всем решённым. LLM тут не нужен — это честная статистика по выгрузке.
+потом по всем решённым. Медианы считаются один раз на правку (refs.Refs), не на каждый инцидент.
+LLM тут не нужен — это честная статистика по выгрузке.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from statistics import median
 
 from .adapter import iso, parse_dt
-
-MIN_SAMPLES = 2
-DONE = ("resolved", "closed", "research")
+from .refs import Refs
 
 
-def _durations(incidents: dict[str, dict]) -> list[tuple[str | None, int | None, float]]:
-    out = []
+def forecast_all(incidents: dict[str, dict], now: datetime, refs: Refs | None = None) -> None:
+    refs = refs or Refs(incidents, now)
     for inc in incidents.values():
-        if inc["state_kind"] not in DONE:
-            continue
-        c, r = parse_dt(inc.get("created_at")), parse_dt(inc.get("resolved_at"))
-        if c and r and r > c:
-            out.append((inc.get("team"), inc.get("priority_id"), (r - c).total_seconds()))
-    return out
+        inc["forecast"] = forecast_one(inc, refs, now)
 
 
-def _pick(durs, team, prio) -> tuple[float | None, str, int]:
-    by_tp = [d for t, p, d in durs if t == team and p == prio]
-    if len(by_tp) >= MIN_SAMPLES:
-        return median(by_tp), "команда и приоритет", len(by_tp)
-    by_p = [d for t, p, d in durs if p == prio]
-    if len(by_p) >= MIN_SAMPLES:
-        return median(by_p), "приоритет", len(by_p)
-    all_d = [d for _, _, d in durs]
-    if all_d:
-        return median(all_d), "все решённые", len(all_d)
-    return None, "нет истории", 0
-
-
-def forecast_all(incidents: dict[str, dict], now: datetime) -> None:
-    durs = _durations(incidents)
-    for inc in incidents.values():
-        inc["forecast"] = forecast_one(inc, durs, now)
-
-
-def forecast_one(inc: dict, durs, now: datetime) -> dict | None:
+def forecast_one(inc: dict, refs: Refs, now: datetime) -> dict | None:
+    if inc["state_kind"] != "active":
+        return None
     created, deadline = parse_dt(inc.get("created_at")), parse_dt(inc.get("deadline"))
-    if inc["state_kind"] != "active" or not created or not deadline or deadline <= created:
+    if not created or not deadline or deadline <= created:
         return None
     total = (deadline - created).total_seconds()
     elapsed = (now - created).total_seconds()
     progress = max(0.0, elapsed / total)
-    med, basis, n = _pick(durs, inc.get("team"), inc.get("priority_id"))
+    med, basis, n = refs.median_resolution(inc.get("team"), inc.get("priority_id"))
     eta = None
     if med is not None:
         eta = created + timedelta(seconds=med)
