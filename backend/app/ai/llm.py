@@ -132,9 +132,12 @@ def build_dup_prompt(members: list[dict]) -> str:
 
 def _json(text: str) -> dict:
     m = re.search(r"\{.*\}", text, re.S)
-    if not m:
+    if m:
+        data = json.loads(m.group(0))
+    elif re.match(r'\s*"\w+"\s*:', text):
+        data = json.loads("{" + text.strip().rstrip(",") + "}")   # модель забыла фигурные скобки
+    else:
         raise ValueError("в ответе нет JSON")
-    data = json.loads(m.group(0))
     if not isinstance(data, dict):
         raise ValueError("ответ не объект")
     return data

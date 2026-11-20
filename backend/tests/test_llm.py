@@ -91,6 +91,9 @@ def test_parse_answer_only_candidates_and_short_summary():
         parse_incident_answer("не json", parts)
     plain = parse_incident_answer('"Золотая рыбка зависла при подтверждении платежа"', {"summary": True})
     assert plain["summary"]["text"] == "Золотая рыбка зависла при подтверждении платежа"
+    braces = parse_incident_answer('"summary": "Сказки не запускаются", "risk_comment": "Проверить серверы видео."',
+                                   {"summary": True, "risk": {}})
+    assert braces["summary"]["text"] == "Сказки не запускаются" and braces["risk"]["comment"] == "Проверить серверы видео."
     d = parse_dup_answer('{"same": "да", "name": "Сбой", "exclude": ["X2", "чужой"]}', ["X1", "X2"])
     assert d["same"] and d["exclude"] == ["X2"]
 
