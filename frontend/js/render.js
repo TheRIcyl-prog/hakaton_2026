@@ -33,12 +33,17 @@ export function renderCounters(snap, onJump, opts = {}) {
   const el = $("#counters");
   el.innerHTML = snap.groups.map((g) => {
     const n = snap.counts[g.key] ?? g.count;
+    if (opts.wall) {
+      const f = failures(snap, g);
+      const [a, b] = COUNTER_LABEL[g.key] || [g.title, ""];
+      return `<div class="counter ${g.key} ${n ? "has" : ""}"><b>${n}</b><span>${a}<br>${b}${f < n ? ` <i>(${f} ${plural(f, "сбой", "сбоя", "сбоев")})</i>` : ""}</span></div>`;
+    }
     if (opts.compact) {
       return `<button class="counter compact ${g.key} ${n ? "has" : ""}" data-key="${g.key}" title="${esc(g.title)}"><span>${COUNTER_SHORT[g.key] || esc(g.title)}</span><b>${n}</b></button>`;
     }
     const [a, b] = COUNTER_LABEL[g.key] || [g.title, ""];
     return `<button class="counter ${g.key} ${n ? "has" : ""}" data-key="${g.key}"><b>${n}</b><span>${a}<br>${b}</span></button>`;
-  }).join("");
+  }).join("") + (opts.wall && snap.outside_active ? `<div class="outside-note"><b>${snap.outside_active}</b><span>ещё активных<br>вне групп</span></div>` : "");
   if (onJump) el.querySelectorAll(".counter").forEach((b) => (b.onclick = () => onJump(b.dataset.key)));
 }
 
@@ -176,15 +181,37 @@ export function renderBoard(snap, nowMs, ui) {
   }
   const alive = new Set();
   const filtering = !!(ui.query || ui.predicate);
+  const seenWall = new Set(); // стена: инцидент уже показан полной карточкой в левой колонке → здесь компактная строка
   let shown = 0;
+  if (ui.wall) {
+    // «Критические» вдвое шире; нет критических — колонка сужается и крупно «Критических нет»
+    const crit = snap.groups.find((g) => g.key === "critical");
+    const hasCrit = !!(crit && crit.ids.length);
+    board.style.gridTemplateColumns = snap.groups.map((g) => g.key === "critical" ? (hasCrit ? "minmax(0, 2fr)" : "minmax(0, .75fr)") : "minmax(0, 1fr)").join(" ");
+    board.classList.toggle("no-critical", !hasCrit);
+  }
   for (const g of snap.groups) {
     const col = board.querySelector(`.column[data-key="${g.key}"]`);
     const body = col.querySelector(".column-body");
     const more = col.querySelector(".column-more");
-    const ids = g.ids.filter((id) => matches(snap.incidents[id], ui.query) && (!ui.predicate || ui.predicate(snap.incidents[id])));
+    let ids = g.ids.filter((id) => matches(snap.incidents[id], ui.query) && (!ui.predicate || ui.predicate(snap.incidents[id])));
     shown += ids.length;
     const cnt = col.querySelector(".count");
-    cnt.innerHTML = filtering ? `${ids.length}<small> из ${g.ids.length}</small>` : String(snap.counts[g.key] ?? g.count);
+    const n = snap.counts[g.key] ?? g.count;
+    const f = failures(snap, g);
+    cnt.innerHTML = filtering ? `${ids.length}<small> из ${g.ids.length}</small>`
+      : `${n}${f < n ? `<small> (${f} ${plural(f, "сбой", "сбоя", "сбоев")})</small>` : ""}`;
+    // стена: дубли одного сбоя — одной карточкой (первая — самая горящая, порядок колонки от сервера)
+    const dupSeen = new Set();
+    if (ui.wall) {
+      ids = ids.filter((id) => {
+        const d = snap.incidents[id].ai && snap.incidents[id].ai.duplicates;
+        if (!d || !d.group_id) return true;
+        if (dupSeen.has(d.group_id)) return false;
+        dupSeen.add(d.group_id);
+        return true;
+      });
+    }
     const limit = ui.wall ? WALL_MAX : (ui.limits && ui.limits[g.key]) || ARM_PAGE;
     const page = ids.slice(0, limit);
     const els = [];
@@ -195,13 +222,16 @@ export function renderBoard(snap, nowMs, ui) {
       const changed = ui.changed.get(id);
       const claim = ownerOf(inc, snap);
       const action = ui.actions ? ui.actions.get(id) : null;
+      const compact = ui.wall && seenWall.has(id);
+      if (ui.wall) seenWall.add(id);
       const sig = [inc.hash, inc.groups.join(), inc.resolved_in.join(), JSON.stringify(inc.ai), inc.forecast && inc.forecast.level,
-        claim ? claim.by : "", inc.work_log.length, changed ? changed.until : 0, action ? action.id : ""].join("|");
+        claim ? claim.by : "", inc.work_log.length, changed ? changed.until : 0, action ? action.id : "", compact].join("|");
       let entry = cardCache.get(key);
       if (!entry || entry.sig !== sig) {
         const el = entry ? entry.el : document.createElement("article");
         el.dataset.id = id;
-        if (ui.wall) fillCardWall(el, inc, g.key, nowMs, changed, claim);
+        if (compact) fillCompactWall(el, inc, g.key, nowMs, claim);
+        else if (ui.wall) fillCardWall(el, inc, g.key, nowMs, changed, claim);
         else fillCardArm(el, inc, g.key, nowMs, changed, claim, action, ui.act);
         if (ui.open) el.onclick = () => ui.open(id);
         entry = { sig, el };
@@ -214,7 +244,10 @@ export function renderBoard(snap, nowMs, ui) {
     body.querySelector(".column-empty")?.remove();
     els.forEach((el, i) => { if (body.children[i] !== el) body.insertBefore(el, body.children[i] || null); });
     while (body.children.length > els.length) body.lastChild.remove();
-    if (!els.length) body.innerHTML = `<div class="column-empty">${filtering ? "нет по фильтру" : "пусто"}</div>`;
+    if (!els.length) {
+      body.innerHTML = ui.wall && g.key === "critical" ? `<div class="column-empty big">Критических нет</div>`
+        : `<div class="column-empty">${filtering ? "нет по фильтру" : "пусто"}</div>`;
+    }
 
     const rest = ids.length - page.length;
     col.dataset.rest = String(rest);
@@ -231,6 +264,17 @@ export function renderBoard(snap, nowMs, ui) {
   return shown;
 }
 
+// Сколько разных сбоев среди активных инцидентов группы: дубли одного сбоя (ai.duplicates.group_id) — один
+export function failures(snap, g) {
+  const keys = new Set();
+  for (const id of g.ids) {
+    const inc = snap.incidents[id];
+    if (!inc || inc.resolved_in.includes(g.key)) continue;
+    keys.add((inc.ai && inc.ai.duplicates && inc.ai.duplicates.group_id) || id);
+  }
+  return keys.size;
+}
+
 // Видеостена не скроллится: показываем столько карточек, сколько влезает, и «+ ещё N»; счётчики в шапке точные
 export function fitColumns() {
   document.querySelectorAll(".column").forEach((col) => {
@@ -238,6 +282,9 @@ export function fitColumns() {
     const more = col.querySelector(".column-more");
     const cards = [...body.querySelectorAll(".card")];
     cards.forEach((c) => (c.style.display = ""));
+    // строку «ещё N» показываем до замера: она съедает высоту колонки, иначе нижняя карточка обрезается
+    more.classList.remove("hidden");
+    more.textContent = "+ ещё";
     const limit = body.clientHeight;
     let hidden = Number(col.dataset.rest || 0);
     for (const c of cards) {
@@ -382,12 +429,15 @@ function fillCardWall(el, inc, group, nowMs, changed, claim) {
     claim ? `<span class="owner">в работе у ${esc(firstName(claim.by))}</span>` : "",
     esc_ ? `<span class="escalated">⇪ эскалирован ${esc(fmtTime(esc_.at))}</span>` : "",
   ].filter(Boolean).join("");
+  const d = inc.ai && inc.ai.duplicates;
+  const size = d ? d.size || (d.ids || []).length : 0;
   el.innerHTML = `
     <div class="card-top">
       <span class="card-product">${esc(inc.product || "—")}</span>
+      ${size > 1 ? `<span class="dup-badge">один сбой · ${size} ${plural(size, "заявка", "заявки", "заявок")}</span>` : ""}
       <span class="card-prio prio-${inc.priority_level}">${esc(inc.priority || "")}</span>
     </div>
-    <div class="card-title">${esc(cardTitle(inc).text)}</div>
+    <div class="card-title">${esc(size > 1 && d.name ? d.name : cardTitle(inc).text)}</div>
     ${metaLine(inc, nowMs, true)}
     ${inc.state_kind === "active" ? `<div class="deadline">
         <div class="deadline-row">${timer(inc, nowMs)}${inc.deadline ? `<small>до ${esc(fmtWhen(inc.deadline, nowMs))}</small>` : ""}</div>
@@ -395,6 +445,17 @@ function fillCardWall(el, inc, group, nowMs, changed, claim) {
       </div>` : stateNote(inc, nowMs)}
     ${workLine ? `<div class="work-line">${workLine}</div>` : ""}
     ${changed && changed.until > Date.now() ? `<div class="changed">● ${esc(changed.texts.join(" · "))}</div>` : ""}`;
+}
+
+// Стена, инцидент уже есть полной карточкой в колонке левее — здесь компактная строка
+function fillCompactWall(el, inc, group, nowMs, claim) {
+  if (inc.resolved_in.includes(group)) { fillResolvedLine(el, inc, nowMs, true); return; }
+  el.className = "card one-line compact-row";
+  el.classList.toggle("is-critical", inc.priority_level === "critical");
+  el.innerHTML = `<b class="card-product">${esc(inc.product || "—")}</b>
+    <span class="line-title">${esc(cardTitle(inc).text)}</span>
+    ${claim ? `<span class="owner">${esc(firstName(claim.by))}</span>` : ""}
+    ${timer(inc, nowMs)}`;
 }
 
 // Таймеры раз в секунду: жёлтый при ≥75% срока или прогнозе «не успеют», красный < 15 мин, просроченный мигает

@@ -1,6 +1,7 @@
 // Фильтры АРМ: продукт, команда, исполнитель, «мои», просроченные, горит срок и др.
 // Выбор запоминается на каждом АРМ. На стене фильтров нет — она всегда показывает всё.
-// Пока фильтруем в браузере по снимку; при тысячах инцидентов это переедет на сервер.
+// Колонки фильтруются в браузере (в снимке все инциденты групп), а «всего по фильтру» и список
+// по всем тысячам — сервер (GET /api/search, параметры — toParams).
 import { esc } from "./format.js";
 
 const KEY = "mi-dashboard:filters";
@@ -66,9 +67,42 @@ export function makePredicate(snap, now, me) {
   };
 }
 
-// Панель фильтров. handlers.change() — перерисовать.
+// Те же фильтры параметрами /api/search (по всем инцидентам, только активные)
+export function toParams(me) {
+  const p = { status: "active" };
+  if (f.product) p.product = f.product;
+  if (f.team) p.team = f.team;
+  if (f.stype) p.service_type = f.stype;
+  if (f.person) {
+    const [kind, name] = [f.person.slice(0, 2), f.person.slice(2)];
+    if (kind === "c:") p.coordinator = name;
+    else p.q = name.split(" (")[0];
+  }
+  if (f.mine) p.coordinator = me || "—";
+  if (f.overdue) p.overdue = 1;
+  if (f.burning) p.burning = 1;
+  if (f.unacked) p.untaken = 1;
+  if (f.noassignee) p.unassigned = 1;
+  if (f.risk) p.risk_high = 1;
+  if (f.dups) p.duplicates = 1;
+  if (f.fresh) p.new_hour = 1;
+  return p;
+}
+
+// Подпись фильтров для заголовка списка: «Зеркальце · просроченные»
+export function describe() {
+  const parts = [f.product, f.team, f.person && f.person.slice(2).split(" (")[0]].filter(Boolean);
+  for (const [k, t] of Object.entries(TOGGLES)) if (f[k]) parts.push(t.label.toLowerCase());
+  if (f.stype) parts.push(f.stype === "client" ? "клиентские" : "внутренние");
+  return parts.join(" · ");
+}
+
+// Панель фильтров. handlers.change() — перерисовать, handlers.all() — список всех по фильтру,
+// handlers.outside() — список активных вне групп.
+let listHandlers = {};
 export function mountFilters(el, handlers) {
   onChange = handlers.change;
+  listHandlers = handlers;
   el.innerHTML = `
     <span class="fl-title">Фильтры</span>
     <select class="fl-select" data-f="product" title="Продукт"></select>
@@ -106,13 +140,13 @@ function set(k, v) {
   onChange();
 }
 
-// Обновить списки, состояние чипов и счётчик «показано X из Y»
-export function renderFilters(el, snap, shown, total) {
+// Обновить списки, состояние чипов и счётчики «12 из 83 в группах · всего 340», «ещё N вне групп»
+export function renderFilters(el, snap, shown, total, serverTotal) {
   const groupIds = new Set(snap.groups.flatMap((g) => g.ids));
   const incs = [...groupIds].map((id) => snap.incidents[id]).filter(Boolean);
   const uniq = (xs) => [...new Set(xs.filter(Boolean))].sort((a, b) => a.localeCompare(b, "ru"));
-  const products = uniq(incs.map((i) => i.product));
-  const teams = uniq(incs.map((i) => i.team));
+  const products = uniq(snap.products && snap.products.length ? [...snap.products] : incs.map((i) => i.product));
+  const teams = uniq(snap.teams && snap.teams.length ? [...snap.teams] : incs.map((i) => i.team));
   const coords = uniq([...(snap.coordinators || []), ...Object.values(snap.claims || {}).map((c) => c.by)]);
   const assignees = uniq(incs.map((i) => i.assignee));
   // если выбранное значение пропало из данных — оставляем его в списке, чтобы было видно, что фильтр стоит
@@ -142,7 +176,12 @@ export function renderFilters(el, snap, shown, total) {
   box.querySelectorAll("[data-x]").forEach((b) => (b.onclick = () => set(b.dataset.x, b.dataset.x === "stype" ? "" : false)));
 
   const active = isActiveFilter();
-  el.querySelector(".fl-count").innerHTML = active ? `показано <b>${shown}</b> из ${total}` : `${total} в группах`;
+  const cnt = el.querySelector(".fl-count");
+  const outside = snap.outside_active || 0;
+  cnt.innerHTML = active
+    ? `в группах <b>${shown}</b> из ${total} · <span class="linklike" data-list="all">всего по фильтру ${serverTotal == null ? "…" : serverTotal} ›</span>`
+    : `${total} в группах${outside ? ` · <span class="linklike" data-list="outside" title="средние и низкие — через поиск и фильтры">ещё ${outside} активных вне групп ›</span>` : ""}`;
+  cnt.querySelectorAll("[data-list]").forEach((s) => (s.onclick = () => listHandlers[s.dataset.list] && listHandlers[s.dataset.list]()));
   el.querySelector(".fl-reset").classList.toggle("hidden", !active);
   el.classList.toggle("filtering", active);
 }

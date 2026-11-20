@@ -5,6 +5,7 @@ import * as F from "./filters.js";
 import { computeAlerts, processEvents, ring, watchOverdue } from "./alerts.js";
 import { api, getMe, setMe, startPolling } from "./api.js";
 import { openTransfer, openEscalate, closeModal } from "./desk.js";
+import * as S from "./search.js";
 
 const HIGHLIGHT_MS = 15000;
 const VIEW_KEY = "mi-dashboard:view";
@@ -14,7 +15,12 @@ const CHANGE_TYPES = new Set(["priority_changed", "deadline_changed", "team_chan
 const state = {
   snap: null, online: true, lastOkMs: 0, offsetMs: 0, openId: null, started: false, alerts: [], escalated: false, meta: null,
   view: loadView(), feedOpen: false, feedSeenSeq: null,
+  extra: new Map(),      // инциденты вне снимка (открыты из поиска): id -> Incident из /api/incidents/{id}
+  serverTotal: null,     // «всего по фильтру» по всем инцидентам (сервер)
+  listMode: null,        // что показывает список поверх колонок: search | all | outside
 };
+// инцидент из снимка, иначе — подгруженный с сервера
+const getInc = (id) => (state.snap && state.snap.incidents[id]) || state.extra.get(id) || null;
 const ui = {
   query: "", changed: new Map(), open: (id) => openDrawer(id), predicate: null, limits: {},
   selected: null, alarmIds: new Set(), actions: new Map(),
@@ -50,6 +56,7 @@ startPolling(
     }
     if (fresh.some((e) => !e.alert && CHANGE_TYPES.has(e.type))) Sound.playTick();
     renderAll();
+    onServerChange();
   },
   (online) => {
     state.online = online;
@@ -59,7 +66,60 @@ startPolling(
 );
 api.meta().then((m) => { state.meta = m; renderAll(); }).catch(() => {});
 
-F.mountFilters(filtersEl, { change: () => { ui.limits = {}; renderMain(); } });
+F.mountFilters(filtersEl, {
+  change: () => { ui.limits = {}; state.serverTotal = null; renderMain(); updateServerTotal(); if (state.listMode === "all") openList("all"); },
+  all: () => openList("all"),
+  outside: () => openList("outside"),
+});
+
+// ---------- серверный поиск и фильтры по всем инцидентам ----------
+S.mountResults({
+  open: (id, inc) => openDrawer(id, inc),
+  claim: (id) => doClaim(id),
+  close: () => { state.listMode = null; },
+});
+
+function openList(mode) {
+  state.listMode = mode;
+  const q = search.value.trim();
+  if (mode === "search") S.showResults(`Поиск «${q}» по всем инцидентам`, { q });
+  else if (mode === "all") S.showResults(`Все активные по фильтру: ${F.describe() || "без фильтров"}`, F.toParams(getMe()));
+  else S.showResults("Активные вне групп (средний и низкий приоритет)", { status: "active", priority: "2,1" });
+}
+
+let totalReq = 0;
+async function updateServerTotal() {
+  if (!F.isActiveFilter()) { state.serverTotal = null; return; }
+  const id = ++totalReq;
+  try {
+    const n = await S.searchTotal(F.toParams(getMe()));
+    if (id === totalReq) { state.serverTotal = n; renderMain(); }
+  } catch { /* сервер недоступен — покажем «…» */ }
+}
+
+// Снимок поменялся: обновить «всего по фильтру», открытый список и инцидент вне снимка — не чаще раза в 2 с
+let lastServerRefresh = 0, refreshTimer = null;
+function onServerChange() {
+  const run = () => {
+    lastServerRefresh = Date.now();
+    refreshTimer = null;
+    updateServerTotal();
+    S.refreshResults();
+    if (state.openId && !state.snap.incidents[state.openId]) fetchExtra(state.openId);
+  };
+  const wait = 2000 - (Date.now() - lastServerRefresh);
+  if (wait <= 0) run();
+  else if (!refreshTimer) refreshTimer = setTimeout(run, wait);
+}
+
+async function fetchExtra(id) {
+  try {
+    const inc = await api.incident(id);
+    state.extra.set(id, inc);
+    if (state.openId === id) R.renderDrawer(inc, state.snap, nowMs(), drawerHandlers, state.meta);
+    R.tickCountdowns(nowMs());
+  } catch { /* удалён из файла — панель покажет последнее, что было */ }
+}
 
 function renderAll() {
   const snap = state.snap;
@@ -71,7 +131,7 @@ function renderAll() {
   R.renderAlertLine(state.alerts, alertHandlers);
   renderMain();
   if (state.feedOpen) R.renderFeedList(snap, document.getElementById("feed-pop"), openFromFeed);
-  if (state.openId) R.renderDrawer(snap.incidents[state.openId], snap, now, drawerHandlers, state.meta);
+  if (state.openId && getInc(state.openId)) R.renderDrawer(getInc(state.openId), snap, now, drawerHandlers, state.meta);
   if (state.started) state.escalated = ring(state.alerts, now, { notify, toast: R.toast });
   R.tickCountdowns(now);
   updateChrome();
@@ -90,10 +150,11 @@ function renderMain() {
 
   const shown = R.renderBoard(snap, now, ui);
   const total = new Set(snap.groups.flatMap((g) => g.ids)).size;
-  const shownUniq = ui.predicate || ui.query
+  const shownUniq = ui.predicate
     ? new Set(snap.groups.flatMap((g) => g.ids).filter(matchesAll)).size
     : total;
-  F.renderFilters(filtersEl, snap, shownUniq, total);
+  F.renderFilters(filtersEl, snap, shownUniq, total, state.serverTotal);
+  S.paint(now, state.openId);
 
   const queueEl = document.getElementById("queue");
   if (state.view === "queue") R.renderQueue(snap, queueEl, { copy, open: openDrawer, transfer: doTransfer, escalate: doEscalate }, ui.predicate);
@@ -109,14 +170,10 @@ function renderMain() {
   return shown;
 }
 
-// Подходит ли инцидент под поиск и фильтры (для счётчика «показано X из Y», не зависит от порций)
+// Подходит ли инцидент под фильтры (для счётчика «12 из 83 в группах», не зависит от порций)
 function matchesAll(id) {
   const inc = state.snap.incidents[id];
-  if (!inc) return false;
-  if (ui.predicate && !ui.predicate(inc)) return false;
-  if (!ui.query) return true;
-  const hay = [inc.id, inc.title, inc.product, inc.service, inc.team, inc.assignee, inc.state, inc.priority].join(" ").toLowerCase();
-  return ui.query.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
+  return !!inc && (!ui.predicate || ui.predicate(inc));
 }
 
 // ---------- раз в секунду ----------
@@ -202,12 +259,12 @@ async function doClaim(id, force) {
 const alertHandlers = { claim: (id) => doClaim(id), open: (id) => openDrawer(id) };
 function doTransfer(id) {
   if (needName()) return;
-  const inc = state.snap.incidents[id];
+  const inc = getInc(id);
   if (inc) openTransfer(inc, state.snap, { copy, onDone: (t) => R.toast(`✔ ${t}`) });
 }
 function doEscalate(id, draft) {
   if (needName()) return;
-  const inc = state.snap.incidents[id];
+  const inc = getInc(id);
   if (!draft) {
     const a = (state.snap.actions || []).find((x) => x.incident_id === id && x.kind === "escalate");
     draft = a ? a.draft : null;
@@ -228,10 +285,15 @@ const drawerHandlers = {
   comment: (id, text) => act(() => api.comment(id, text), "Комментарий добавлен"),
 };
 
-function openDrawer(id) {
-  state.openId = id && state.snap && state.snap.incidents[id] ? id : null;
+// inc — инцидент из списка поиска, если его нет в снимке (свежую версию догрузим с сервера)
+function openDrawer(id, inc) {
+  if (id && state.snap && !state.snap.incidents[id]) {
+    if (inc) state.extra.set(id, inc);
+    fetchExtra(id);
+  }
+  state.openId = id && getInc(id) ? id : null;
   document.getElementById("workspace").classList.toggle("with-panel", !!state.openId);
-  R.renderDrawer(state.openId ? state.snap.incidents[state.openId] : null, state.snap, nowMs(), drawerHandlers, state.meta);
+  R.renderDrawer(state.openId ? getInc(state.openId) : null, state.snap, nowMs(), drawerHandlers, state.meta);
   ui.selected = state.openId;
   document.querySelectorAll("#board .card").forEach((c) => c.classList.toggle("selected", c.dataset.id === state.openId));
   R.tickCountdowns(nowMs());
@@ -353,7 +415,14 @@ importInput.onchange = async () => {
 };
 
 const search = document.getElementById("search");
-search.oninput = () => { ui.query = search.value.trim(); ui.limits = {}; renderMain(); };
+let searchTimer = null;
+search.oninput = () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    if (search.value.trim()) openList("search");
+    else if (state.listMode === "search") S.hideResults();
+  }, 250);
+};
 
 // Горячие клавиши: В — взять в работу открытый инцидент (или верхнюю тревогу), Esc — закрыть, / — поиск
 document.addEventListener("keydown", (e) => {
@@ -362,11 +431,14 @@ document.addEventListener("keydown", (e) => {
     if (!document.getElementById("modal").classList.contains("hidden")) closeModal();
     else if (typing) e.target.blur();
     else if (state.feedOpen) setFeed(false);
-    else openDrawer(null);
+    else if (state.openId) openDrawer(null);
+    else if (S.isOpen()) { S.hideResults(); search.value = ""; }
   } else if (e.key === "/" && !typing) { e.preventDefault(); search.focus(); }
+  else if ((!typing || e.target === search) && ["ArrowDown", "ArrowUp", "Enter"].includes(e.key) && S.resultsKey(e)) { e.preventDefault(); }
   else if (!typing && !e.ctrlKey && !e.metaKey && !e.altKey && ["в", "В", "d", "D"].includes(e.key)) {
-    const id = state.openId || (state.alerts[0] && state.alerts[0].incident_id);
-    const inc = id && state.snap && state.snap.incidents[id];
+    const sel = S.selectedResult();
+    const id = state.openId || (sel && sel.id) || (state.alerts[0] && state.alerts[0].incident_id);
+    const inc = id && (getInc(id) || sel);
     if (inc && !R.ownerOf(inc, state.snap)) { e.preventDefault(); doClaim(id); }
   }
 });

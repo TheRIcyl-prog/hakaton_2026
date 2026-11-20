@@ -57,7 +57,7 @@ function render() {
   for (const k of [...bannerSeen.keys()]) if (!keys.has(k)) bannerSeen.delete(k);
   for (const a of state.alerts) if (!bannerSeen.has(a.key)) bannerSeen.set(a.key, first ? 0 : Date.now());
   ui.alarmIds = new Set(state.alerts.map((a) => a.incident_id));
-  R.renderCounters(snap, null);
+  R.renderCounters(snap, null, { wall: true });
   R.renderClock(snap, now);
   renderBanner(now);
   R.renderBoard(snap, now, ui);
