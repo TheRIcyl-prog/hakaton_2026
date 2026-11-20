@@ -35,14 +35,20 @@ async function send(method, url, body) {
   });
   let data = null;
   try { data = await r.json(); } catch { /* пустой ответ */ }
-  if (!r.ok) throw new Error((data && data.detail) || `ошибка ${r.status}`);
+  if (!r.ok) {
+    const err = new Error((data && data.detail) || `ошибка ${r.status}`);
+    err.status = r.status;
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
 export const api = {
-  ack: (key) => send("POST", "/api/alerts/ack", { key, by: getMe() }),
-  claim: (id) => send("POST", `/api/incidents/${encodeURIComponent(id)}/claim`, { by: getMe() }),
-  release: (id) => send("DELETE", `/api/incidents/${encodeURIComponent(id)}/claim`),
+  // «Взять в работу» снимает тревогу у всех (кнопки «Принял» нет). Уже у другого → 409 с data.coordinator.
+  // expected_hash не шлём: «взять» не меняет полей инцидента, конфликт тут только мешал бы.
+  claim: (id, force) => send("POST", `/api/incidents/${encodeURIComponent(id)}/claim`, { by: getMe(), force: force || undefined }),
+  release: (id) => send("DELETE", `/api/incidents/${encodeURIComponent(id)}/claim?by=${encodeURIComponent(getMe())}`),
   assign: (id, team, comment, assignee) => send("POST", `/api/itsm/${encodeURIComponent(id)}/assign`, { team, comment, assignee, by: getMe() }),
   state: (id, state_id, comment, reason) => send("POST", `/api/itsm/${encodeURIComponent(id)}/state`, { state_id, comment, reason, by: getMe() }),
   priority: (id, priority_id, recalc_deadline, comment) => send("POST", `/api/itsm/${encodeURIComponent(id)}/priority`, { priority_id, recalc_deadline, comment, by: getMe() }),

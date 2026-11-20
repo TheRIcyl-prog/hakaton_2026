@@ -17,7 +17,7 @@ const TOGGLES = {
   mine: { label: "Мои", hint: "в работе у меня", test: (inc, c) => !!c.me && claimBy(c, inc) === c.me },
   overdue: { label: "Просроченные", hint: "срок уже нарушен", test: (inc, c) => isActive(inc) && inc.deadline && Date.parse(inc.deadline) < c.now },
   burning: { label: "Горит срок", hint: "прогноз: не успеют", test: (inc) => isActive(inc) && inc.forecast && ["breach", "overdue"].includes(inc.forecast.level) },
-  unacked: { label: "Непринятые тревоги", hint: "никто не нажал «Принял»", test: (inc, c) => c.unacked.has(inc.id), more: true },
+  unacked: { label: "Не взятые в работу", hint: "тревога, и никто не взял в работу", test: (inc, c) => c.unacked.has(inc.id), more: true },
   noassignee: { label: "Без исполнителя", hint: "не назначен инженер", test: (inc) => !inc.assignee, more: true },
   risk: { label: "Высокий риск по ИИ", hint: "может стать критическим", test: (inc) => !!(inc.ai && inc.ai.risk && inc.ai.risk.level === "high"), more: true },
   dups: { label: "Дубли и массовые", hint: "мастер, дубль или найден ИИ", test: (inc) => isDup(inc), more: true },
@@ -25,7 +25,7 @@ const TOGGLES = {
 };
 
 const isActive = (inc) => inc.state_kind === "active";
-const claimBy = (c, inc) => ((c.snap.claims || {})[inc.id] || {}).by || "";
+const claimBy = (c, inc) => (inc.coordinator && inc.coordinator.name) || ((c.snap.claims || {})[inc.id] || {}).by || "";
 export function isDup(inc) {
   const d = inc.ai && inc.ai.duplicates;
   const n = Array.isArray(d) ? d.length : d && d.ids ? d.ids.length : 0;
@@ -50,7 +50,7 @@ export function isActiveFilter() {
 // Предикат для инцидента
 export function makePredicate(snap, now, me) {
   if (!isActiveFilter()) return null;
-  const c = { snap, now, me, unacked: new Set((snap.alerts || []).filter((a) => !a.acked_by).map((a) => a.incident_id)) };
+  const c = { snap, now, me, unacked: new Set((snap.alerts || []).filter((a) => !a.taken_by).map((a) => a.incident_id)) };
   const on = Object.keys(TOGGLES).filter((k) => f[k]);
   return (inc) => {
     if (!inc) return false;

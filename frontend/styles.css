@@ -347,8 +347,8 @@ body.wall.no-cursor, body.wall.no-cursor * { cursor: none !important; }
 .al-chip.critical { background: #0005; border-color: #fff; }
 .al-name { padding: 3px 4px 3px 10px; cursor: pointer; font-weight: 500; }
 .al-name:hover { text-decoration: underline; }
-.al-ack { background: none; border: 0; border-left: 1px solid #fff5; color: #fff; cursor: pointer; padding: 3px 9px; font-weight: 700; }
-.al-ack:hover { background: #fff3; border-radius: 0 999px 999px 0; }
+.al-take { background: none; border: 0; border-left: 1px solid #fff5; color: #fff; cursor: pointer; padding: 3px 9px; font-weight: 700; }
+.al-take:hover { background: #fff3; border-radius: 0 999px 999px 0; }
 .al-rest, .al-wait { font-size: 12px; opacity: .85; white-space: nowrap; }
 .alert-line .btn-ack { background: #fff; color: #111; border-color: #fff; font-weight: 700; padding: 5px 12px; }
 

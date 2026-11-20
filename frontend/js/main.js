@@ -68,7 +68,7 @@ function renderAll() {
   state.alerts = computeAlerts(snap);
   R.renderCounters(snap, jumpTo, { compact: true });
   R.renderClock(snap, now);
-  R.renderAlertLine(state.alerts, { ack: doAck, ackAll: doAckAll, open: openDrawer });
+  R.renderAlertLine(state.alerts, alertHandlers);
   renderMain();
   if (state.feedOpen) R.renderFeedList(snap, document.getElementById("feed-pop"), openFromFeed);
   if (state.openId) R.renderDrawer(snap.incidents[state.openId], snap, now, drawerHandlers, state.meta);
@@ -134,13 +134,13 @@ setInterval(() => {
   updateChrome();
 }, 1000);
 // «ждут N мин» в строке тревог
-setInterval(() => { if (state.snap) R.renderAlertLine(state.alerts, { ack: doAck, ackAll: doAckAll, open: openDrawer }); }, 15000);
+setInterval(() => { if (state.snap) R.renderAlertLine(state.alerts, alertHandlers); }, 15000);
 
 function updateChrome() {
   const crit = state.alerts.filter((a) => a.group === "critical").length;
   const coord = state.alerts.filter((a) => a.group === "coordinators").length;
   const base = "АРМ координатора МИ";
-  if (crit) document.title = blink ? `🔴 КРИТИЧЕСКИЙ (${crit}) — ${base}` : `⚠ ${crit} не принято — ${base}`;
+  if (crit) document.title = blink ? `🔴 КРИТИЧЕСКИЙ (${crit}) — ${base}` : `⚠ ${crit} не взято — ${base}`;
   else if (coord) document.title = blink ? `🟣 На координаторах (${coord}) — ${base}` : base;
   else document.title = base;
   setFavicon(crit ? (blink ? "#ff0032" : "#ffffff") : coord ? "#a78bfa" : "#ff0032");
@@ -183,8 +183,20 @@ async function act(fn, okText) {
   }
 }
 
-const doAck = (key) => act(() => api.ack(key));
-const doAckAll = (keys) => act(() => Promise.all(keys.map((k) => api.ack(k))));
+// «Взять в работу»: тревога снимается у всех. Уже у другого → предложить забрать себе.
+async function doClaim(id, force) {
+  if (needName()) return;
+  try {
+    await api.claim(id, force);
+    R.toast(force ? "Забрали себе в работу" : "Взято в работу");
+  } catch (e) {
+    const who = e.status === 409 && e.data && e.data.coordinator;
+    const name = who && (who.name || who.by || who);
+    if (name && !force && confirm(`Инцидент уже в работе у ${name}. Забрать себе?`)) return doClaim(id, true);
+    if (!name) R.toast(`⚠ ${e.message}`, "bad");
+  }
+}
+const alertHandlers = { claim: (id) => doClaim(id), open: (id) => openDrawer(id) };
 function doTransfer(id) {
   if (needName()) return;
   const inc = state.snap.incidents[id];
@@ -204,9 +216,9 @@ const drawerHandlers = {
   close: () => openDrawer(null),
   copy,
   open: (id) => openDrawer(id),
-  ack: doAck,
-  claim: (id) => act(() => api.claim(id), "Взято в работу"),
-  release: (id) => act(() => api.release(id)),
+  get me() { return getMe(); },
+  claim: (id, force) => doClaim(id, force),
+  release: (id) => act(() => api.release(id), "Отпустили — инцидент снова свободен"),
   transfer: doTransfer,
   escalate: doEscalate,
   setState: (id, s) => act(() => api.state(id, s), `Статус: ${state.meta ? state.meta.states[s] : s}`),
@@ -340,7 +352,7 @@ importInput.onchange = async () => {
 const search = document.getElementById("search");
 search.oninput = () => { ui.query = search.value.trim(); ui.limits = {}; renderMain(); };
 
-// Горячие клавиши: Пробел — принять верхнюю тревогу, Esc — закрыть, / — поиск
+// Горячие клавиши: В — взять в работу открытый инцидент (или верхнюю тревогу), Esc — закрыть, / — поиск
 document.addEventListener("keydown", (e) => {
   const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName);
   if (e.key === "Escape") {
@@ -349,5 +361,9 @@ document.addEventListener("keydown", (e) => {
     else if (state.feedOpen) setFeed(false);
     else openDrawer(null);
   } else if (e.key === "/" && !typing) { e.preventDefault(); search.focus(); }
-  else if (e.key === " " && !typing && state.started && state.alerts.length) { e.preventDefault(); doAck(state.alerts[0].key); }
+  else if (!typing && !e.ctrlKey && !e.metaKey && !e.altKey && ["в", "В", "d", "D"].includes(e.key)) {
+    const id = state.openId || (state.alerts[0] && state.alerts[0].incident_id);
+    const inc = id && state.snap && state.snap.incidents[id];
+    if (inc && !R.ownerOf(inc, state.snap)) { e.preventDefault(); doClaim(id); }
+  }
 });

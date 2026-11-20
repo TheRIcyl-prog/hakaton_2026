@@ -67,7 +67,7 @@ setInterval(() => {
   let expired = false;
   for (const [id, c] of ui.changed) if (c.until <= Date.now()) { ui.changed.delete(id); expired = true; }
   if (expired) R.renderBoard(state.snap, now, ui);
-  // минута ожидания «Принял» обновляется на баннере
+  // «не взят N мин» обновляется на баннере
   if (Date.now() % 15000 < 1000) R.renderAlerts(state.alerts, now, {}, { wall: true });
   state.escalated = ring(state.alerts, now, { voice: true }); // звук/голос молчат, если выключены
   document.getElementById("topbar").classList.toggle("escalated", state.escalated);

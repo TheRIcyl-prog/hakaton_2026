@@ -22,6 +22,11 @@ const ARM_PAGE = 60;   // на АРМ список подгружается по
 
 const $ = (sel) => document.querySelector(sel);
 const firstName = (s) => (s || "").split(" (")[0];
+// «в работе у Ольги»: поле coordinator инцидента (пишется в файл), claims — запасной путь для старого снимка
+export function ownerOf(inc, snap) {
+  if (inc && inc.coordinator && inc.coordinator.name) return { by: inc.coordinator.name, at: inc.coordinator.at };
+  return (snap && snap.claims && inc && snap.claims[inc.id]) || null;
+}
 const aiTag = (ai) => `<span class="ai-tag" title="Подсказка ИИ · ${esc(AI_SOURCE[ai && ai.source] || "правила")}">ИИ</span>`;
 
 // ---------- шапка ----------
@@ -83,13 +88,14 @@ export function renderAlerts(alerts, nowMs, handlers, opts = {}) {
       <span class="alert-kind">${kind}</span>
       <span class="alert-text"><b>${esc(inc.product || "")}</b> · ${esc(inc.title)} · ${esc(shortId(inc.id))} · ${esc(inc.team || "")}${route}</span>
       <span class="alert-time" data-deadline="${esc(inc.deadline || "")}">${rem == null ? "срок —" : (rem < 0 ? "просрочен " : "до срока ") + fmtLeft(rem)}</span>
-      <span class="alert-wait">ждёт «Принял» ${waiting ? waiting + " мин" : "сейчас"}</span>
+      <span class="alert-wait">${waiting ? `не взят ${waiting} мин` : "только что"}</span>
     </div>`;
-  }).join("") + (alerts.length > max ? `<div class="alert-more">ещё ${alerts.length - max} непринятых тревог</div>` : "");
+  }).join("") + (alerts.length > max ? `<div class="alert-more">ещё ${alerts.length - max} не взятых в работу</div>` : "");
 }
 
 // ---------- тревоги: одна строка (АРМ) ----------
-// Карточка тревоги мигает в своей колонке, внимание держат звук и голос.
+// Карточка тревоги мигает в своей колонке, внимание держат звук и голос. Снимает тревогу «Взять» —
+// каждую берут отдельно (общей кнопки нет: decisions.md, п. 4).
 export function renderAlertLine(alerts, handlers) {
   const el = $("#alerts");
   if (!alerts.length) { el.innerHTML = ""; el.className = "alerts"; return; }
@@ -104,15 +110,13 @@ export function renderAlertLine(alerts, handlers) {
     <b class="al-title">${n} ${plural(n, "новая тревога", "новые тревоги", "новых тревог")}:</b>
     <span class="al-chips">${alerts.slice(0, max).map((a) => `
       <span class="al-chip ${a.group}" data-id="${esc(a.incident_id)}" data-key="${esc(a.key)}" title="${esc(a.group === "critical" ? "Критический" : "На координаторах")} · ${esc(a.inc.title)}">
-        <span class="al-name">${a.group === "critical" ? "! " : "→ "}${esc(a.inc.product || shortId(a.inc.id))}</span><button class="al-ack" title="Принял">✓</button>
+        <span class="al-name">${a.group === "critical" ? "! " : "→ "}${esc(a.inc.product || shortId(a.inc.id))}</span><button class="al-take" title="Взять в работу — тревога снимется у всех">Взять</button>
       </span>`).join("")}${n > max ? `<span class="al-rest">и ещё ${n - max}</span>` : ""}</span>
-    <span class="al-wait">${waitMin ? `ждут до ${waitMin} мин` : "только что"}</span>
-    <button class="btn btn-ack" data-act="ackall" title="Пробел — принять первую">Принять все</button>`;
+    <span class="al-wait">${waitMin ? `не взяты до ${waitMin} мин` : "только что"}</span>`;
   el.querySelectorAll(".al-chip").forEach((c) => {
     c.querySelector(".al-name").onclick = () => handlers.open(c.dataset.id);
-    c.querySelector(".al-ack").onclick = () => handlers.ack(c.dataset.key);
+    c.querySelector(".al-take").onclick = () => handlers.claim(c.dataset.id);
   });
-  el.querySelector("[data-act=ackall]").onclick = () => handlers.ackAll(alerts.map((a) => a.key));
 }
 
 // ---------- очередь «Что делать сейчас» (вкладка АРМ) ----------
@@ -126,7 +130,7 @@ export function renderQueue(snap, el, handlers, predicate) {
     const inc = snap.incidents[a.incident_id] || {};
     const crit = inc.priority_level === "critical" ? "crit" : "";
     const conf = a.confidence != null ? ` · уверенность ${Math.round(a.confidence * 100)}%` : "";
-    const claim = (snap.claims || {})[a.incident_id];
+    const claim = ownerOf(inc, snap);
     const main = a.kind === "route"
       ? `<button class="btn small btn-primary" data-act="transfer">${a.target_team ? "Передать" : "Выбрать команду"}</button>`
       : `<button class="btn small btn-primary" data-act="escalate">Эскалировать</button>`;
@@ -175,7 +179,6 @@ export function renderBoard(snap, nowMs, ui) {
         <div class="column-more hidden"></div>
       </section>`).join("");
   }
-  const claims = snap.claims || {};
   const alive = new Set();
   const filtering = !!(ui.query || ui.predicate);
   let shown = 0;
@@ -195,7 +198,7 @@ export function renderBoard(snap, nowMs, ui) {
       const key = `${g.key}:${id}`;
       alive.add(key);
       const changed = ui.changed.get(id);
-      const claim = claims[id];
+      const claim = ownerOf(inc, snap);
       const action = ui.actions ? ui.actions.get(id) : null;
       const why = ui.why ? ui.why.has(key) : false;
       const sig = [inc.hash, inc.groups.join(), inc.resolved_in.join(), JSON.stringify(inc.ai), inc.forecast && inc.forecast.level,
@@ -437,8 +440,9 @@ export function renderDrawer(inc, snap, nowMs, handlers, meta) {
   const fc = inc.forecast;
   const action = (snap.actions || []).find((a) => a.incident_id === inc.id);
   const route = ai.route;
-  const claim = (snap.claims || {})[inc.id];
-  const alert = (snap.alerts || []).find((a) => a.incident_id === inc.id && !a.acked_by);
+  const claim = ownerOf(inc, snap);
+  const mine = !!claim && claim.by === handlers.me;
+  const alert = claim ? null : (snap.alerts || []).find((a) => a.incident_id === inc.id && !a.taken_by);
   const open = (id) => `<span class="linklike" data-open="${esc(id)}">${esc(shortId(id))}</span>`;
   const similar = route ? route.similar_ids.map(open).join(", ") : "";
   const groups = inc.groups.map((g) => GROUP_SHORT[g] + (inc.resolved_in.includes(g) ? " (решён)" : "")).join(", ") || "не в группах";
@@ -460,7 +464,7 @@ export function renderDrawer(inc, snap, nowMs, handlers, meta) {
     <div class="panel-title">${esc(inc.title)}</div>
     <div class="panel-sub">${esc(inc.id)} · ${groups}</div>
 
-    ${alert ? `<div class="panel-alert ${alert.group}">🔔 Тревога: ${alert.group === "critical" ? "критический" : "назначен на координаторов"} <button class="btn small btn-ack" data-act="ack">Принял</button></div>` : ""}
+    ${alert ? `<div class="panel-alert ${alert.group}">🔔 Тревога: ${alert.group === "critical" ? "критический" : "назначен на координаторов"} <button class="btn small btn-ack" data-act="claim">Взять в работу</button></div>` : ""}
 
     <dl class="kv facts">
       <dt>Срок</dt><dd>${active && inc.deadline ? `<span class="countdown" data-deadline="${esc(inc.deadline)}"></span> <small>до ${esc(fmtDateTime(inc.deadline, nowMs))}</small>` : esc(fmtDateTime(inc.deadline, nowMs))}</dd>
@@ -472,7 +476,9 @@ export function renderDrawer(inc, snap, nowMs, handlers, meta) {
     </dl>
 
     <div class="drawer-btns">
-      ${claim ? `<button class="btn small" data-act="release">Отпустить</button>` : `<button class="btn small" data-act="claim">Взять в работу</button>`}
+      ${mine ? `<button class="btn small" data-act="release">Отпустить</button>`
+        : claim ? `<button class="btn small" data-act="force" title="Сейчас в работе у ${esc(claim.by)}">Забрать себе</button>`
+        : alert ? "" : `<button class="btn small" data-act="claim">Взять в работу</button>`}
       ${canWork && inc.state_kind !== "resolved" ? `<button class="btn small btn-primary" data-act="transfer">Передать</button>` : ""}
       ${active ? `<button class="btn small" data-act="escalate">Эскалировать</button>` : ""}
       <a class="btn small" href="${esc(inc.itsm_url || "#")}" target="_blank" rel="noopener">ITSM ↗</a>
@@ -515,7 +521,7 @@ export function renderDrawer(inc, snap, nowMs, handlers, meta) {
 
   const on = (sel, fn) => { const b = el.querySelector(sel); if (b) b.onclick = fn; };
   on("[data-act=close]", handlers.close);
-  on("[data-act=ack]", () => handlers.ack(alert.key));
+  on("[data-act=force]", () => handlers.claim(inc.id, true));
   on("[data-act=claim]", () => handlers.claim(inc.id));
   on("[data-act=release]", () => handlers.release(inc.id));
   on("[data-act=transfer]", () => handlers.transfer(inc.id));

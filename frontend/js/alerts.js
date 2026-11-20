@@ -1,5 +1,6 @@
 // Тревоги приходят с сервера (общие для стены и всех АРМ): эпизод начинается, когда инцидент
-// входит в «критические» или «на координаторах», и висит, пока кто-то не нажмёт «Принял».
+// входит в «критические» или «на координаторах», и висит, пока кто-то не возьмёт инцидент в работу
+// (кнопки «Принял» нет — decisions.md, п. 4; «в работе у …» — поле coordinator в файле).
 // Здесь — только звук, голос и системные уведомления (лестница эскалации).
 import { playCritical, playCoordinators, playResolved, speak } from "./sound.js";
 import { speakLeft } from "./format.js";
@@ -13,10 +14,10 @@ const lastRing = new Map();
 let processedSeq = null;
 let bootId = null;
 
-// Непринятые тревоги: критические первыми
+// Тревоги, которые никто не взял в работу: критические первыми
 export function computeAlerts(snap) {
   return (snap.alerts || [])
-    .filter((a) => !a.acked_by && snap.incidents[a.incident_id])
+    .filter((a) => !a.taken_by && snap.incidents[a.incident_id] && !(snap.incidents[a.incident_id].coordinator))
     .map((a) => ({ ...a, inc: snap.incidents[a.incident_id] }));
 }
 
@@ -54,7 +55,7 @@ function voiceFor(a, nowMs) {
 }
 
 // Лестница: звук+голос сразу, повтор (крит. — раз в минуту, коорд. — раз в 2 мин),
-// через 2 минуты без «Принял» — громче и мигает шапка. Возвращает true, если пора мигать.
+// через 2 минуты, если никто не взял, — громче и мигает шапка. Возвращает true, если пора мигать.
 export function ring(alerts, nowMs, opts) {
   const keys = new Set(alerts.map((a) => a.key));
   for (const k of [...firstSeen.keys()]) if (!keys.has(k)) { firstSeen.delete(k); lastRing.delete(k); }
