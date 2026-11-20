@@ -71,3 +71,13 @@ def make_store(tmp_path, rules):
 
 def write(path: Path, records) -> None:
     path.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _clean_ai():
+    """ИИ хранит историю изменений между вызовами — каждому тесту чистое состояние без диска."""
+    from backend.app import ai
+
+    ai.reset()
+    yield
+    ai.reset()
