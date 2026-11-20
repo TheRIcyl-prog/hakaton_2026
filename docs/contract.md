@@ -180,7 +180,8 @@
 `ai_status` в снимке (и в `/api/health` → `ai`):
 ```jsonc
 {"provider": "gigachat",            // rules — GigaChat выключен (LLM_PROVIDER=rules)
- "state": "ok",                     // ok | starting | offline (нет связи/лимит — работают правила, повтор раз в минуту) | off
+ "state": "ok",                     // ok | starting | limited (429: ответы задерживаются, повтор через 5–60 с)
+                                    // | offline (нет связи — работают правила, повтор раз в минуту) | off
  "label": "ИИ: нет связи с GigaChat, работают правила",   // готовая подпись для шапки/плашки
  "error": null, "queue": 12, "in_flight": 2, "done": 140, "cached": 480,
  "last_ok_at": "...", "next_retry_at": "..."}

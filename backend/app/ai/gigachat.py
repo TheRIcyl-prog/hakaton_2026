@@ -19,6 +19,11 @@ class GigaChatError(RuntimeError):
     pass
 
 
+class GigaChatRateLimit(GigaChatError):
+    """429: слишком много запросов. У бесплатного GIGACHAT_API_PERS — один поток одновременно."""
+    rate_limited = True
+
+
 class GigaChatClient:
     def __init__(self, credentials: str, scope: str = "GIGACHAT_API_PERS", ca_bundle: Path | None = None,
                  model: str = "GigaChat", timeout: float = 40.0):
@@ -72,6 +77,8 @@ class GigaChatClient:
         if r.status_code == 401:
             self._token = None
             raise GigaChatError("токен истёк, повторим")
+        if r.status_code == 429:
+            raise GigaChatRateLimit("лимит запросов GigaChat (429)")
         if r.status_code != 200:
             raise GigaChatError(f"chat {r.status_code}: {r.text[:200]}")
         return r.json()["choices"][0]["message"]["content"]

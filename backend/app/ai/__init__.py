@@ -5,7 +5,7 @@ enrich(incidents, now, rules) кладёт в каждый инцидент по
 данные для кнопки «почему?» (факторы, похожие, источник rules|gigachat|cache, время).
 
 Воронка GigaChat: все → активные в группах (+ отмеченные динамикой) → нет в кэше → очередь
-(критические → на координаторах → высокие → динамика → исследование) → 2–3 запроса параллельно.
+(критические → на координаторах → высокие → динамика → исследование) → GigaChat (1 поток на бесплатном тарифе).
 enrich() никогда не ходит в сеть: за один вызов — справочники O(n), правила, чтение кэша, постановка в очередь.
 """
 from __future__ import annotations
@@ -62,7 +62,7 @@ def setup() -> None:
     if not ca_path.exists():
         log.warning("Нет %s — TLS к GigaChat может не пройти", ca_path)
     _worker = LLMWorker(client, ROOT / "cache" / "ai_cache.json",
-                        concurrency=int(os.getenv("GIGACHAT_CONCURRENCY", "2")),
+                        concurrency=int(os.getenv("GIGACHAT_CONCURRENCY", "1")),
                         rpm=int(os.getenv("GIGACHAT_RPM", "20")))
 
 

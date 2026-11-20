@@ -1,4 +1,6 @@
-"""Фоновый GigaChat: очередь с приоритетами, 2–3 запроса параллельно, лимит в минуту, кэш на диске.
+"""Фоновый GigaChat: очередь с приоритетами, лимит в минуту, кэш на диске.
+Потоков по умолчанию 1: бесплатный GIGACHAT_API_PERS на второй одновременный запрос отвечает 429.
+Платный тариф — GIGACHAT_CONCURRENCY=2..3.
 
 Снимок никогда не ждёт GigaChat: enrich() берёт готовое из кэша, а чего нет — ставит в очередь.
 Кэш — по hash входного текста (`cache/ai_cache.json`), поэтому перезапуск не тратит запросы.
@@ -23,6 +25,7 @@ from .text import SUMMARY_MAX, clip, scrub
 log = logging.getLogger("dashboard.ai")
 PROMPT_VERSION = "v2"
 RETRY_SECONDS = 60.0
+RATE_BACKOFF = 5.0     # 429 (лимит/второй поток у бесплатного тарифа): 5 → 10 → 20 → … → RETRY_SECONDS
 SAVE_EVERY = 2.0
 DIRTY_EVERY = 2.0
 MAX_FAILS = 2          # плохой ответ дважды — больше этот ключ не спрашиваем до перезапуска
@@ -183,7 +186,7 @@ def _real_now() -> str:
 
 
 class LLMWorker:
-    def __init__(self, client, cache_file, concurrency: int = 2, rpm: int = 20, retry_seconds: float = RETRY_SECONDS):
+    def __init__(self, client, cache_file, concurrency: int = 1, rpm: int = 20, retry_seconds: float = RETRY_SECONDS):
         self.client = client
         self.cache_file = cache_file
         self.rpm = max(1, rpm)
@@ -201,6 +204,7 @@ class LLMWorker:
         self._saved_at = 0.0
         self._unsaved = False
         self._seq = 0
+        self._limit_hits = 0
         self.status = {"provider": "gigachat", "state": "starting", "label": "ИИ: GigaChat подключается", "error": None,
                        "queue": 0, "in_flight": 0, "done": 0, "cached": len(self.cache), "last_ok_at": None,
                        "next_retry_at": None}
@@ -307,15 +311,21 @@ class LLMWorker:
             try:
                 text = self.client.chat([{"role": "system", "content": SYSTEM}, {"role": "user", "content": t.prompt}])
             except Exception as e:  # noqa: BLE001 — сеть/лимит/TLS: ждём и повторяем, сервер не роняем
-                log.warning("GigaChat недоступен: %s", e)
+                limited = getattr(e, "rate_limited", False)
+                log.warning("GigaChat %s: %s", "лимит" if limited else "недоступен", e)
                 with self.cv:
                     self.in_flight.discard(t.key)
                     self.wanted.setdefault(t.key, t)        # задача вернётся в очередь
-                    self.pause_until = time.monotonic() + self.retry_seconds
-                    self.status.update(state="offline", label="ИИ: нет связи с GigaChat, работают правила",
-                                       error=str(e)[:200],
-                                       next_retry_at=iso(datetime.fromtimestamp(time.time() + self.retry_seconds,
-                                                                                timezone.utc)))
+                    if limited:
+                        self._limit_hits += 1
+                        wait = min(self.retry_seconds, RATE_BACKOFF * 2 ** (self._limit_hits - 1))
+                        state, label = "limited", "ИИ: GigaChat — лимит запросов, ответы задерживаются"
+                    else:
+                        wait = self.retry_seconds
+                        state, label = "offline", "ИИ: нет связи с GigaChat, работают правила"
+                    self.pause_until = max(self.pause_until, time.monotonic() + wait)
+                    self.status.update(state=state, label=label, error=str(e)[:200],
+                                       next_retry_at=iso(datetime.fromtimestamp(time.time() + wait, timezone.utc)))
                     self.cv.notify_all()
                 continue
             try:
@@ -339,6 +349,7 @@ class LLMWorker:
                         self.from_disk.discard(k)
                     self._unsaved = True
                     self.dirty = True
+                self._limit_hits = 0
                 self.status.update(state="ok", label="ИИ: GigaChat", error=None, last_ok_at=at, next_retry_at=None,
                                    done=self.status["done"] + 1)
             self.save()

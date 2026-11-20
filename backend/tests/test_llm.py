@@ -242,3 +242,28 @@ def test_burst_confirmed_by_gigachat_absorbs_text_group(tmp_path, rules):
     assert all(c and c["group_id"] == "burst-M0" and c["kind"] == "burst" for c in cards.values())
     assert cards["M3"]["size"] == 4 and cards["M3"]["name"] == "Ковёр не взлетает у всех"
     assert [g["id"] for g in ai.duplicate_groups()] == ["burst-M0"]
+
+
+def test_rate_limit_429_short_backoff_not_offline(tmp_path, rules, monkeypatch):
+    """Бесплатный GigaChat на второй одновременный запрос отвечает 429: короткая пауза, а не «нет связи» на минуту."""
+    from backend.app.ai import llm
+    from backend.app.ai.gigachat import GigaChatRateLimit
+
+    monkeypatch.setattr(llm, "RATE_BACKOFF", 0.2)
+
+    class Limited(FakeClient):
+        hits = 0
+
+        def chat(self, messages, **kw):
+            if self.hits < 1:
+                self.hits += 1
+                raise GigaChatRateLimit("лимит запросов GigaChat (429)")
+            return super().chat(messages, **kw)
+
+    client = Limited()
+    w = setup_worker(tmp_path, client)            # retry_seconds = 60: «нет связи» ждала бы минуту
+    run(rules, [make("K", 0, 4)])
+    assert wait_until(lambda: w.snapshot_status()["state"] == "limited", 1)
+    assert "лимит" in ai.status()["label"]
+    assert wait_until(lambda: w.snapshot_status()["done"] == 1, 2)   # повтор через 0,2 с, а не через минуту
+    assert w.snapshot_status()["state"] == "ok"
