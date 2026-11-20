@@ -99,7 +99,7 @@ function row(inc, i, nowMs, selectedId) {
     <span class="res-main"><b>${esc(inc.product || "—")}</b> · ${esc(t.text)}
       <small>возник ${esc(fmtWhen(inc.created_at, nowMs))} · ${esc(inc.team || "—")} / ${inc.assignee ? esc(inc.assignee.split(" (")[0]) : "сотрудник не назначен"} · ${esc(inc.state || "")}</small></span>
     <span class="res-time">${timer}</span>
-    <span class="res-owner">${owner ? `<span class="owner">в работе у ${esc(owner.by.split(" (")[0])}</span>`
+    <span class="res-owner">${owner ? `<span class="owner">в работе: ${esc(owner.by.split(" (")[0])}</span>`
       : active ? `<button class="btn small btn-take" data-claim="${esc(inc.id)}">Взять</button>` : ""}</span>
   </div>`;
 }

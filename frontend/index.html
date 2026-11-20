@@ -38,9 +38,10 @@
 
   <section class="toolbar">
     <div class="tabs">
-      <button class="tab active" data-view="board">Доска</button>
+      <button class="tab active" data-view="board">Группы</button>
       <button class="tab" data-view="queue">Что делать сейчас <b id="queue-count"></b></button>
-      <button class="tab" id="feed-btn">Лента <b id="feed-count"></b></button>
+      <button class="tab" data-view="mine">Мои <b id="mine-count" class="soft"></b></button>
+      <button class="tab" data-view="feed">Лента <b id="feed-count"></b></button>
     </div>
     <div class="filters" id="filters"></div>
   </section>
@@ -48,11 +49,12 @@
   <div class="workspace" id="workspace">
     <main class="board" id="board"></main>
     <section class="queue hidden" id="queue"></section>
+    <section class="queue hidden" id="mine"></section>
+    <section class="feedview hidden" id="feedview"></section>
     <section class="results hidden" id="results"></section>
     <aside class="panel hidden" id="drawer"></aside>
   </div>
 
-  <div class="popover feed-pop hidden" id="feed-pop"></div>
   <div class="modal hidden" id="modal"></div>
   <div class="toasts" id="toasts"></div>
 

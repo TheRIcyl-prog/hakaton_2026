@@ -54,7 +54,7 @@ export function processEvents(snap, opts) {
         opts.toast(`🔴 Ваш инцидент стал критическим: ${e.product || ""} · ${e.title || ""}`, "bad");
         opts.notify("Ваш инцидент стал КРИТИЧЕСКИМ", `${e.product || ""} · ${e.title || ""}`, e.incident_id, true);
       } else {
-        opts.toast(`Стал критическим, в работе у ${owner}: ${e.product || ""} · ${e.title || ""}`);
+        opts.toast(`Стал критическим (в работе: ${owner}): ${e.product || ""} · ${e.title || ""}`);
       }
     }
   }

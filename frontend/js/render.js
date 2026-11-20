@@ -13,7 +13,6 @@ const COUNTER_LABEL = {
 };
 const COUNTER_SHORT = { critical: "Критические", coordinators: "На координаторах", high: "Высокий", research: "Исследование" };
 const FORECAST_TEXT = { ok: "успевают", risk: "срок на исходе", breach: "прогноз: не успеют", overdue: "срок нарушен" };
-const RISK_TEXT = { high: "высокий", medium: "средний", low: "низкий" };
 const AI_SOURCE = { rules: "правила по истории", gigachat: "GigaChat", cache: "GigaChat (кэш)" };
 
 const WALL_MAX = 30;   // на стене в колонке не больше стольких карточек в DOM, остальное — «+ ещё N»
@@ -135,7 +134,7 @@ export function renderQueue(snap, el, handlers, predicate) {
       ? `<button class="btn small btn-primary" data-act="transfer">${a.target_team ? "Передать" : "Выбрать команду"}</button>`
       : `<button class="btn small btn-primary" data-act="escalate">Эскалировать</button>`;
     return `<div class="action ${a.kind} ${crit}" data-id="${esc(a.id)}" data-inc="${esc(a.incident_id)}">
-      <div class="action-head"><span>${a.kind === "route" ? "ПЕРЕДАТЬ" : "ЭСКАЛИРОВАТЬ"} · ${esc(shortId(a.incident_id))} · ${esc(inc.product || "")}</span>
+      <div class="action-head"><span>${a.kind === "route" ? "ПЕРЕДАТЬ" : "ЭСКАЛИРОВАТЬ"} · ${esc(inc.product || "")}</span>
         <span class="countdown-mini" data-deadline="${esc(inc.deadline || "")}"></span></div>
       <div class="action-title">${esc(a.title)}</div>
       <div class="action-reason">${a.kind === "route" ? aiTag(inc.ai) : ""}${esc(a.reason)}${conf}${claim ? ` · <b class="owner">👤 ${esc(firstName(claim.by))}</b>` : ""}</div>
@@ -384,7 +383,7 @@ function fillCardArm(el, inc, group, nowMs, changed, claim, action, act) {
   const active = inc.state_kind === "active";
 
   const buttons = [];
-  if (claim) buttons.push(`<span class="owner" title="координатор с ${esc(fmtTime(claim.at))}">в работе у ${esc(firstName(claim.by))}</span>`);
+  if (claim) buttons.push(`<span class="owner" title="координатор с ${esc(fmtTime(claim.at))}">в работе: ${esc(firstName(claim.by))}</span>`);
   else if (active) buttons.push(`<button class="btn small btn-take" data-act="claim" title="Клавиша В">Взять в работу</button>`);
   if (group === "coordinators" && active) buttons.push(`<button class="btn small btn-primary" data-act="transfer">Передать</button>`);
   if (action && action.kind === "escalate" && active) buttons.push(`<button class="btn small" data-act="escalate">Эскалировать</button>`);
@@ -426,7 +425,7 @@ function fillCardWall(el, inc, group, nowMs, changed, claim) {
   const fc = inc.forecast;
   const esc_ = lastEscalation(inc);
   const workLine = [
-    claim ? `<span class="owner">в работе у ${esc(firstName(claim.by))}</span>` : "",
+    claim ? `<span class="owner">в работе: ${esc(firstName(claim.by))}</span>` : "",
     esc_ ? `<span class="escalated">⇪ эскалирован ${esc(fmtTime(esc_.at))}</span>` : "",
   ].filter(Boolean).join("");
   const d = inc.ai && inc.ai.duplicates;
@@ -486,7 +485,7 @@ export function tickCountdowns(nowMs) {
 // ---------- лента ----------
 const EVENT_ICON = { became_critical: "🔴", critical_resolved: "✅", to_coordinators: "🟣", resolved: "✔", reopened: "↺",
   new: "＋", removed: "－", comment: "💬", escalated: "⇪" };
-const feedItem = (e) => `<span class="feed-item alert-${e.alert || ""}" data-id="${esc(e.incident_id)}">${fmtTime(e.clock_at)} ${EVENT_ICON[e.type] || "•"} <b>${esc(shortId(e.incident_id))}</b> ${esc(e.text)}${e.by ? ` <i>· ${esc(firstName(e.by))}</i>` : ""}</span>`;
+const feedItem = (e) => `<span class="feed-item alert-${e.alert || ""}" data-id="${esc(e.incident_id)}">${fmtTime(e.clock_at)} ${EVENT_ICON[e.type] || "•"} <b>${esc(e.product || shortId(e.incident_id))}</b> ${esc(e.text)}${e.by ? ` <i>· ${esc(firstName(e.by))}</i>` : ""}</span>`;
 
 // Бегущая строка внизу (стена)
 export function renderFeed(snap, onOpen) {
@@ -501,124 +500,31 @@ export function renderFeed(snap, onOpen) {
 // Список событий во всплывающей панели (АРМ, кнопка «Лента»)
 export function renderFeedList(snap, el, onOpen) {
   const evs = (snap.events || []).slice(-50).reverse();
-  el.innerHTML = `<div class="pop-title">Лента изменений</div>` + (evs.length
+  el.innerHTML = `<div class="pop-title">Лента изменений — последние ${evs.length}</div>` + (evs.length
     ? `<div class="feed-list">${evs.map((e) => `<div class="feed-row">${feedItem(e)}</div>`).join("")}</div>`
     : `<div class="pop-empty">Изменений пока нет — правки в файле и действия координаторов появятся здесь</div>`);
   el.querySelectorAll(".feed-item").forEach((i) => (i.onclick = () => onOpen(i.dataset.id)));
 }
 
-// ---------- панель выбранного инцидента (АРМ) ----------
-export function renderDrawer(inc, snap, nowMs, handlers, meta) {
-  const el = $("#drawer");
-  if (!inc) { el.classList.add("hidden"); el.innerHTML = ""; el.dataset.id = ""; return; }
-  el.classList.remove("hidden");
-  // при обновлении снимка не теряем набранный комментарий и прокрутку
-  const same = el.dataset.id === inc.id;
-  const prevInput = el.querySelector(".comment-form input");
-  const keep = same && prevInput ? { v: prevInput.value, f: document.activeElement === prevInput } : null;
-  const scroll = same ? el.scrollTop : 0;
-  el.dataset.id = inc.id;
-  const ai = inc.ai || {};
-  const fc = inc.forecast;
-  const action = (snap.actions || []).find((a) => a.incident_id === inc.id);
-  const route = ai.route;
-  const claim = ownerOf(inc, snap);
-  const mine = !!claim && claim.by === handlers.me;
-  const alert = claim ? null : (snap.alerts || []).find((a) => a.incident_id === inc.id && !a.taken_by);
-  const open = (id) => `<span class="linklike" data-open="${esc(id)}">${esc(shortId(id))}</span>`;
-  const similar = route ? route.similar_ids.map(open).join(", ") : "";
-  const groups = inc.groups.map((g) => GROUP_SHORT[g] + (inc.resolved_in.includes(g) ? " (решён)" : "")).join(", ") || "не в группах";
-  const transitions = meta ? (meta.transitions[inc.state_id] || []) : [];
-  const stateBtns = transitions.map((s) => `<button class="btn small" data-state="${s}">→ ${esc(meta.states[s])}</button>`).join("");
-  const canWork = inc.state_kind !== "closed";
-  const d = ai.duplicates;
-  const dupIds = Array.isArray(d) ? d : d && d.ids ? d.ids : [];
-  const links = [inc.is_master && "мастер", inc.is_double && "дубль", inc.is_reason && "дочерний", inc.is_effect && "причина других"].filter(Boolean);
-  const active = inc.state_kind === "active";
-
-  el.innerHTML = `
-    <div class="panel-head">
-      <span class="card-prio prio-${inc.priority_level}">${esc(inc.priority || "")}</span>
-      <span class="chip st-${inc.state_kind}">${esc(inc.state || "—")}</span>
-      <button class="btn small drawer-close" data-act="close" title="Esc">✕</button>
-    </div>
-    <h2>${esc(inc.product || "—")}</h2>
-    <div class="panel-title">${esc(inc.title)}</div>
-    <div class="panel-sub">${esc(inc.id)} · ${groups}</div>
-
-    ${alert ? `<div class="panel-alert ${alert.group}">🔔 Тревога: ${alert.group === "critical" ? "критический" : "назначен на координаторов"} <button class="btn small btn-ack" data-act="claim">Взять в работу</button></div>` : ""}
-
-    <dl class="kv facts">
-      <dt>Срок</dt><dd>${active && inc.deadline ? `<span class="countdown" data-deadline="${esc(inc.deadline)}"></span> <small>до ${esc(fmtDateTime(inc.deadline, nowMs))}</small>` : esc(fmtDateTime(inc.deadline, nowMs))}</dd>
-      ${fc ? `<dt>Прогноз</dt><dd><span class="forecast ${fc.level}">${FORECAST_TEXT[fc.level]}</span> <small>прошло ${Math.round(fc.progress * 100)}% срока${fc.eta ? " · решат ~" + esc(fmtDateTime(fc.eta, nowMs)) : ""}</small></dd>` : ""}
-      ${inc.resolved_at ? `<dt>Завершён</dt><dd>${esc(fmtDateTime(inc.resolved_at, nowMs))}</dd>` : ""}
-      <dt>Команда</dt><dd>${esc(inc.team || "—")}</dd>
-      <dt>Исполнитель</dt><dd>${esc(inc.assignee || "не назначен")}</dd>
-      <dt>Координатор</dt><dd>${claim ? `👤 <b>${esc(claim.by)}</b> · с ${esc(fmtTime(claim.at))}` : "никто не взял в работу"}</dd>
-    </dl>
-
-    <div class="drawer-btns">
-      ${mine ? `<button class="btn small" data-act="release">Отпустить</button>`
-        : claim ? `<button class="btn small" data-act="force" title="Сейчас в работе у ${esc(claim.by)}">Забрать себе</button>`
-        : alert ? "" : `<button class="btn small" data-act="claim">Взять в работу</button>`}
-      ${canWork && inc.state_kind !== "resolved" ? `<button class="btn small btn-primary" data-act="transfer">Передать</button>` : ""}
-      ${active ? `<button class="btn small" data-act="escalate">Эскалировать</button>` : ""}
-      <a class="btn small" href="${esc(inc.itsm_url || "#")}" target="_blank" rel="noopener">ITSM ↗</a>
-    </div>
-    ${stateBtns ? `<div class="drawer-btns"><span class="muted-label">Статус:</span>${stateBtns}</div>` : ""}
-    <form class="comment-form" data-act="comment"><input name="text" placeholder="Комментарий в журнал работ…" autocomplete="off"><button class="btn small">Добавить</button></form>
-
-    <h3>${aiTag(ai)} Подсказки ИИ <small class="ai-src">${esc(AI_SOURCE[ai.source] || "")}</small></h3>
-    ${ai.summary ? `<div class="ai-box"><b>Выжимка:</b> ${esc(ai.summary)}</div>` : ""}
-    ${route ? `<div class="ai-box"><b>Кому передать: ${esc(route.team)}</b> · уверенность ${Math.round(route.confidence * 100)}%
-      <div class="ai-why"><b>Почему:</b> ${esc(route.reason)}</div>
-      ${route.alternatives.length ? `<div class="ai-why">Альтернативы: ${route.alternatives.map((x) => `${esc(x.team)} (${Math.round(x.score * 100)}%)`).join(", ")}</div>` : ""}
-      ${similar ? `<div class="ai-why">Похожие случаи: ${similar}</div>` : ""}</div>` : ""}
-    ${ai.risk ? `<div class="ai-box"><b>Риск стать критическим: <span class="risk-${ai.risk.level}">${RISK_TEXT[ai.risk.level] || ""} · ${ai.risk.score}/100</span></b>
-      <div class="ai-why"><b>Почему:</b> ${esc(ai.risk.factors.join(" · ") || "значимых факторов нет")}</div></div>` : ""}
-    ${dupIds.length || links.length ? `<div class="ai-box"><b>Дубли и связи:</b> ${links.join(", ") || ""}${dupIds.length ? `${links.length ? "<br>" : ""}похожие заявки об этом же сбое: ${dupIds.map(open).join(", ")}` : ""}
-      ${d && d.reason ? `<div class="ai-why"><b>Почему:</b> ${esc(d.reason)}</div>` : ""}</div>` : ""}
-    ${!ai.summary && !route && !ai.risk && !dupIds.length && !links.length ? `<div class="pop-empty">Подсказок нет</div>` : ""}
-
-    ${action ? `<h3>Черновик ${action.kind === "route" ? "передачи" : "эскалации"} <span class="linklike" data-act="copy">скопировать</span></h3><div class="draft">${esc(action.draft)}</div>` : ""}
-
-    <h3>Журнал работ</h3>
-    ${inc.work_log.length ? `<div class="worklog">${inc.work_log.slice().reverse().map((w) => `
-      <div class="wl"><span>${esc(fmtDateTime(w.at, nowMs))}</span><b>${esc(w.author || "")}</b><div>${esc(w.text || "")}</div></div>`).join("")}</div>`
-      : `<div class="pop-empty">записей нет</div>`}
-
-    <h3>Описание</h3><div class="panel-text">${esc(inc.description || "—")}</div>
-    ${inc.solution && inc.state_kind !== "active" ? `<h3>Решение</h3><div class="panel-text">${esc(inc.solution)}</div>` : ""}
-
-    <h3>Карточка</h3>
-    <dl class="kv">
-      <dt>Статус</dt><dd>${esc(inc.state)}${inc.state_reason && inc.state_reason !== "Нет" ? " · " + esc(inc.state_reason) : ""}</dd>
-      <dt>Возник</dt><dd>${esc(fmtDateTime(inc.created_at, nowMs))}</dd>
-      <dt>Сервис</dt><dd>${esc(inc.service || "—")}</dd>
-      <dt>Влияние / срочность</dt><dd>${esc(inc.impact || "—")} / ${esc(inc.urgency || "—")}</dd>
-      <dt>Тип сервиса</dt><dd>${esc(inc.service_type || "—")}</dd>
-      <dt>Канал</dt><dd>${esc(inc.channel || "—")}</dd>
-      <dt>Связи</dt><dd>${links.join(", ") || "—"}</dd>
-    </dl>`;
-
-  const on = (sel, fn) => { const b = el.querySelector(sel); if (b) b.onclick = fn; };
-  on("[data-act=close]", handlers.close);
-  on("[data-act=force]", () => handlers.claim(inc.id, true));
-  on("[data-act=claim]", () => handlers.claim(inc.id));
-  on("[data-act=release]", () => handlers.release(inc.id));
-  on("[data-act=transfer]", () => handlers.transfer(inc.id));
-  on("[data-act=escalate]", () => handlers.escalate(inc.id, action && action.kind === "escalate" ? action.draft : null));
-  on("[data-act=copy]", (e) => handlers.copy(action.draft, e.target));
-  el.querySelectorAll("[data-state]").forEach((b) => (b.onclick = () => handlers.setState(inc.id, Number(b.dataset.state))));
-  el.querySelectorAll("[data-open]").forEach((s) => (s.onclick = () => handlers.open(s.dataset.open)));
-  const form = el.querySelector("[data-act=comment]");
-  form.onsubmit = (e) => {
-    e.preventDefault();
-    const t = form.text.value.trim();
-    if (t) { handlers.comment(inc.id, t); form.text.value = ""; }
-  };
-  if (keep) { form.text.value = keep.v; if (keep.f) form.text.focus(); }
-  el.scrollTop = scroll;
+// ---------- вкладка «Мои»: инциденты в работе у меня ----------
+export function renderMine(snap, el, me, nowMs, ui) {
+  const incs = Object.values(snap.incidents).filter((inc) => me && ownerOf(inc, snap) && ownerOf(inc, snap).by === me);
+  incs.sort((x, y) => (x.state_kind === "active" ? 0 : 1) - (y.state_kind === "active" ? 0 : 1)
+    || (Date.parse(x.deadline || "2999-01-01") - Date.parse(y.deadline || "2999-01-01")));
+  if (!me) { el.innerHTML = `<div class="actions-empty">Представьтесь — тогда здесь будут инциденты, которые вы взяли в работу</div>`; return 0; }
+  if (!incs.length) { el.innerHTML = `<div class="actions-empty">Вы пока ничего не взяли в работу. «Взять в работу» — на карточке, в панели или клавиша В</div>`; return 0; }
+  el.innerHTML = "";
+  for (const inc of incs) {
+    const card = document.createElement("article");
+    card.dataset.id = inc.id;
+    const group = inc.groups.find((g) => !inc.resolved_in.includes(g)) || inc.groups[0] || "";
+    const action = ui.actions ? ui.actions.get(inc.id) : null;
+    fillCardArm(card, inc, group, nowMs, ui.changed.get(inc.id), ownerOf(inc, snap), action, ui.act);
+    card.classList.toggle("selected", ui.selected === inc.id);
+    card.onclick = () => ui.open(inc.id);
+    el.appendChild(card);
+  }
+  return incs.length;
 }
 
 export function toast(text, kind = "") {

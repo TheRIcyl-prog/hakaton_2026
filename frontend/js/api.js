@@ -49,12 +49,14 @@ export const api = {
   // expected_hash не шлём: «взять» не меняет полей инцидента, конфликт тут только мешал бы.
   claim: (id, force) => send("POST", `/api/incidents/${encodeURIComponent(id)}/claim`, { by: getMe(), force: force || undefined }),
   release: (id) => send("DELETE", `/api/incidents/${encodeURIComponent(id)}/claim?by=${encodeURIComponent(getMe())}`),
-  assign: (id, team, comment, assignee) => send("POST", `/api/itsm/${encodeURIComponent(id)}/assign`, { team, comment, assignee, by: getMe() }),
+  // expected_hash: инцидент изменился, пока координатор смотрел → 409 {conflict, changes}, правка не сохраняется
+  assign: (id, team, comment, assignee, hash) => send("POST", `/api/itsm/${encodeURIComponent(id)}/assign`, { team, comment, assignee, by: getMe(), expected_hash: hash || undefined }),
   state: (id, state_id, comment, reason) => send("POST", `/api/itsm/${encodeURIComponent(id)}/state`, { state_id, comment, reason, by: getMe() }),
   priority: (id, priority_id, recalc_deadline, comment) => send("POST", `/api/itsm/${encodeURIComponent(id)}/priority`, { priority_id, recalc_deadline, comment, by: getMe() }),
   deadline: (id, deadline, comment) => send("POST", `/api/itsm/${encodeURIComponent(id)}/deadline`, { deadline, comment, by: getMe() }),
   comment: (id, text) => send("POST", `/api/itsm/${encodeURIComponent(id)}/comment`, { text, by: getMe() }),
   escalate: (id, comment) => send("POST", `/api/itsm/${encodeURIComponent(id)}/escalate`, { comment, by: getMe() }),
+  confirmDups: (master_id, ids) => send("POST", "/api/duplicates/confirm", { master_id, ids, by: getMe() }),
   meta: () => send("GET", "/api/meta"),
   incident: (id) => send("GET", `/api/incidents/${encodeURIComponent(id)}`),
 };

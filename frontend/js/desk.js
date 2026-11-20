@@ -1,5 +1,5 @@
 // Диалоги АРМ: передача в команду и подтверждение эскалации.
-import { esc, shortId } from "./format.js";
+import { esc } from "./format.js";
 import { api } from "./api.js";
 
 const modal = () => document.getElementById("modal");
@@ -10,9 +10,16 @@ export function closeModal() {
 }
 
 // Передать инцидент в команду. Рекомендованные команды — сверху с долей похожих случаев.
-export function openTransfer(inc, snap, { onDone, copy }) {
+// Конфликт правок (409): инцидент изменили, пока окно было открыто — ничего не перезаписано
+function conflictText(ex) {
+  const ch = ex.data && ex.data.changes;
+  return ch && ch.length ? `Инцидент только что изменили: ${ch.map((c) => c.text).join("; ")}. Правка не сохранена.` : ex.message;
+}
+
+export function openTransfer(inc, snap, { onDone, copy, reopen }) {
   const route = inc.ai && inc.ai.route;
-  const suggested = route ? [{ team: route.team, score: route.confidence }, ...route.alternatives] : [];
+  const pct = (x) => x.confidence_text || `${Math.round((x.score ?? x.confidence ?? 0) * 100)}%`;
+  const suggested = route ? [{ team: route.team, label: pct(route) }, ...(route.alternatives || []).map((a) => ({ team: a.team, label: pct(a) }))] : [];
   const action = (snap.actions || []).find((a) => a.incident_id === inc.id && a.kind === "route");
   const others = (snap.teams || []).filter((t) => t !== inc.team && !suggested.some((s) => s.team === t));
   const first = suggested.find((s) => s.team !== inc.team);
@@ -20,11 +27,11 @@ export function openTransfer(inc, snap, { onDone, copy }) {
   modal().innerHTML = `
     <form class="modal-card" id="transfer-form">
       <h2>Передать в команду</h2>
-      <div class="modal-sub">${esc(shortId(inc.id))} · ${esc(inc.product || "")} · ${esc(inc.title)}<br>сейчас: <b>${esc(inc.team || "—")}</b></div>
-      ${suggested.length ? `<div class="modal-label">Рекомендация по похожим случаям</div>
+      <div class="modal-sub">${esc(inc.product || "")} · ${esc(inc.title)}<br>${esc(inc.id)} · сейчас: <b>${esc(inc.team || "—")}</b></div>
+      ${suggested.length ? `<div class="modal-label"><span class="ai-tag">ИИ</span> рекомендация по похожим случаям</div>
         <div class="team-options">${suggested.filter((s) => s.team !== inc.team).map((s, i) => `
           <label class="team-option"><input type="radio" name="team" value="${esc(s.team)}" ${s === first ? "checked" : ""}>
-            <span><b>${esc(s.team)}</b><small>${Math.round(s.score * 100)}%${i === 0 && route ? " · " + esc(route.reason) : ""}</small></span></label>`).join("")}
+            <span><b>${esc(s.team)}</b><small>${esc(s.label)}${i === 0 && route && route.reason ? " · " + esc(route.reason) : ""}</small></span></label>`).join("")}
         </div>` : `<div class="modal-sub">Похожих случаев нет — выберите команду из списка.</div>`}
       <div class="modal-label">Или другая команда</div>
       <select name="other"><option value="">— выбрать из списка —</option>${others.map((t) => `<option>${esc(t)}</option>`).join("")}</select>
@@ -50,11 +57,17 @@ export function openTransfer(inc, snap, { onDone, copy }) {
         const text = route ? action.draft.split(route.team).join(team) : action.draft.replace("<команда>", team);
         await copy(text);
       }
-      await api.assign(inc.id, team, form.comment.value.trim() || null, form.assignee.value.trim() || null);
+      await api.assign(inc.id, team, form.comment.value.trim() || null, form.assignee.value.trim() || null, inc.hash);
       closeModal();
       onDone(`Передан в «${team}»`);
     } catch (ex) {
-      err.textContent = ex.message;
+      err.textContent = conflictText(ex);
+      if (ex.data && ex.data.conflict && reopen) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "btn small"; b.textContent = "Обновить";
+        b.onclick = () => { closeModal(); reopen(); };
+        err.append(" ", b);
+      }
       err.classList.remove("hidden");
     }
   };
@@ -66,7 +79,7 @@ export function openEscalate(inc, draft, { onDone, copy }) {
   modal().innerHTML = `
     <form class="modal-card" id="esc-form">
       <h2>Эскалировать</h2>
-      <div class="modal-sub">${esc(shortId(inc.id))} · ${esc(inc.product || "")} · команда <b>${esc(inc.team || "—")}</b></div>
+      <div class="modal-sub">${esc(inc.product || "")} · ${esc(inc.id)} · команда <b>${esc(inc.team || "—")}</b></div>
       <div class="modal-label">Кому и почему (в журнал работ)</div>
       <textarea name="comment" rows="3">Эскалировано руководителю группы «${esc(inc.team || "")}»: ${esc(inc.forecast && inc.forecast.level === "overdue" ? "срок нарушен" : "срок под угрозой")}.</textarea>
       ${draft ? `<label class="check"><input type="checkbox" name="copy" checked> Скопировать текст эскалации</label>` : ""}

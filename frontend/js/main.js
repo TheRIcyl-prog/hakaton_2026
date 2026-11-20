@@ -6,15 +6,18 @@ import { computeAlerts, processEvents, ring, watchOverdue } from "./alerts.js";
 import { api, getMe, setMe, startPolling } from "./api.js";
 import { openTransfer, openEscalate, closeModal } from "./desk.js";
 import * as S from "./search.js";
+import { renderPanel } from "./panel.js";
 
 const HIGHLIGHT_MS = 15000;
 const VIEW_KEY = "mi-dashboard:view";
+const VIEWS = ["board", "queue", "mine", "feed"]; // вкладки: Группы, Что делать сейчас, Мои, Лента
 const CHANGE_TYPES = new Set(["priority_changed", "deadline_changed", "team_changed", "assignee_changed", "status_changed",
   "became_critical", "to_coordinators", "from_coordinators", "resolved", "reopened", "critical_resolved", "new", "comment", "escalated"]);
 
 const state = {
   snap: null, online: true, lastOkMs: 0, offsetMs: 0, openId: null, started: false, alerts: [], escalated: false, meta: null,
-  view: loadView(), feedOpen: false, feedSeenSeq: null,
+  view: loadView(), feedSeenSeq: null,
+  history: new Map(),    // id -> {hash, list} — история изменений для панели (GET /api/incidents/{id})
   extra: new Map(),      // инциденты вне снимка (открыты из поиска): id -> Incident из /api/incidents/{id}
   serverTotal: null,     // «всего по фильтру» по всем инцидентам (сервер)
   listMode: null,        // что показывает список поверх колонок: search | all | outside
@@ -35,7 +38,7 @@ const nowMs = () => Date.now() + state.offsetMs;
 const filtersEl = document.getElementById("filters");
 
 function loadView() {
-  try { return localStorage.getItem(VIEW_KEY) === "queue" ? "queue" : "board"; } catch { return "board"; }
+  try { const v = localStorage.getItem(VIEW_KEY); return VIEWS.includes(v) ? v : "board"; } catch { return "board"; }
 }
 
 // ---------- данные ----------
@@ -64,7 +67,6 @@ startPolling(
     R.renderStatus(state);
   },
 );
-api.meta().then((m) => { state.meta = m; renderAll(); }).catch(() => {});
 
 F.mountFilters(filtersEl, {
   change: () => { ui.limits = {}; state.serverTotal = null; renderMain(); updateServerTotal(); if (state.listMode === "all") openList("all"); },
@@ -112,13 +114,25 @@ function onServerChange() {
   else if (!refreshTimer) refreshTimer = setTimeout(run, wait);
 }
 
+// Полная запись инцидента + история изменений: для инцидентов вне снимка и для «Истории» в панели
 async function fetchExtra(id) {
   try {
     const inc = await api.incident(id);
-    state.extra.set(id, inc);
-    if (state.openId === id) R.renderDrawer(inc, state.snap, nowMs(), drawerHandlers, state.meta);
-    R.tickCountdowns(nowMs());
+    state.history.set(id, { hash: inc.hash, list: inc.history || [] });
+    if (!state.snap || !state.snap.incidents[id]) state.extra.set(id, inc);
+    if (state.openId === id) paintPanel();
   } catch { /* удалён из файла — панель покажет последнее, что было */ }
+}
+
+function paintPanel() {
+  const inc = state.openId ? getInc(state.openId) : null;
+  const h = inc ? state.history.get(inc.id) : null;
+  if (inc && (!h || h.hash !== inc.hash) && !h?.loading) {
+    state.history.set(inc.id, { ...(h || {}), loading: true, hash: h ? h.hash : null });
+    fetchExtra(inc.id);
+  }
+  renderPanel(inc, state.snap, nowMs(), drawerHandlers, h && h.list);
+  R.tickCountdowns(nowMs());
 }
 
 function renderAll() {
@@ -130,8 +144,7 @@ function renderAll() {
   R.renderClock(snap, now);
   R.renderAlertLine(state.alerts, alertHandlers);
   renderMain();
-  if (state.feedOpen) R.renderFeedList(snap, document.getElementById("feed-pop"), openFromFeed);
-  if (state.openId && getInc(state.openId)) R.renderDrawer(getInc(state.openId), snap, now, drawerHandlers, state.meta);
+  if (state.openId && getInc(state.openId)) paintPanel();
   if (state.started) state.escalated = ring(state.alerts, now, { notify, toast: R.toast });
   R.tickCountdowns(now);
   updateChrome();
@@ -157,15 +170,24 @@ function renderMain() {
   S.paint(now, state.openId);
 
   const queueEl = document.getElementById("queue");
+  const mineEl = document.getElementById("mine");
+  const feedEl = document.getElementById("feedview");
   if (state.view === "queue") R.renderQueue(snap, queueEl, { copy, open: openDrawer, transfer: doTransfer, escalate: doEscalate }, ui.predicate);
+  if (state.view === "feed") { state.feedSeenSeq = snap.last_event_seq; R.renderFeedList(snap, feedEl, openDrawer); }
+  const mineN = state.view === "mine" ? R.renderMine(snap, mineEl, getMe(), now, ui)
+    : Object.values(snap.incidents).filter((i) => getMe() && i.coordinator && i.coordinator.name === getMe() && i.state_kind === "active").length;
   const qn = (snap.actions || []).length;
   document.getElementById("queue-count").textContent = qn ? String(qn) : "";
+  document.getElementById("mine-count").textContent = mineN ? String(mineN) : "";
   document.getElementById("board").classList.toggle("hidden", state.view !== "board");
   queueEl.classList.toggle("hidden", state.view !== "queue");
+  mineEl.classList.toggle("hidden", state.view !== "mine");
+  feedEl.classList.toggle("hidden", state.view !== "feed");
+  filtersEl.classList.toggle("hidden", state.view === "feed" || state.view === "mine");
   document.querySelectorAll(".tab[data-view]").forEach((t) => t.classList.toggle("active", t.dataset.view === state.view));
 
   const unseen = Math.max(0, snap.last_event_seq - (state.feedSeenSeq ?? snap.last_event_seq));
-  document.getElementById("feed-count").textContent = unseen && !state.feedOpen ? String(Math.min(unseen, 99)) : "";
+  document.getElementById("feed-count").textContent = unseen && state.view !== "feed" ? String(Math.min(unseen, 99)) : "";
   R.tickCountdowns(now);
   return shown;
 }
@@ -252,7 +274,7 @@ async function doClaim(id, force) {
   } catch (e) {
     const who = e.status === 409 && e.data && e.data.coordinator;
     const name = who && (who.name || who.by || who);
-    if (name && !force && confirm(`Инцидент уже в работе у ${name}. Забрать себе?`)) return doClaim(id, true);
+    if (name && !force && confirm(`Инцидент уже в работе: ${name}. Забрать себе?`)) return doClaim(id, true);
     if (!name) R.toast(`⚠ ${e.message}`, "bad");
   }
 }
@@ -260,7 +282,7 @@ const alertHandlers = { claim: (id) => doClaim(id), open: (id) => openDrawer(id)
 function doTransfer(id) {
   if (needName()) return;
   const inc = getInc(id);
-  if (inc) openTransfer(inc, state.snap, { copy, onDone: (t) => R.toast(`✔ ${t}`) });
+  if (inc) openTransfer(inc, state.snap, { copy, onDone: (t) => R.toast(`✔ ${t}`), reopen: () => doTransfer(id) });
 }
 function doEscalate(id, draft) {
   if (needName()) return;
@@ -279,9 +301,13 @@ const drawerHandlers = {
   get me() { return getMe(); },
   claim: (id, force) => doClaim(id, force),
   release: (id) => act(() => api.release(id), "Отпустили — инцидент снова свободен"),
+  confirmDups: (inc) => {
+    const d = inc.ai && inc.ai.duplicates;
+    if (!d) return;
+    act(() => api.confirmDups(d.master_id, d.ids), `Записано: один сбой, ${d.size || d.ids.length} заявок`);
+  },
   transfer: doTransfer,
   escalate: doEscalate,
-  setState: (id, s) => act(() => api.state(id, s), `Статус: ${state.meta ? state.meta.states[s] : s}`),
   comment: (id, text) => act(() => api.comment(id, text), "Комментарий добавлен"),
 };
 
@@ -292,17 +318,11 @@ function openDrawer(id, inc) {
     fetchExtra(id);
   }
   state.openId = id && getInc(id) ? id : null;
-  document.getElementById("workspace").classList.toggle("with-panel", !!state.openId);
-  R.renderDrawer(state.openId ? getInc(state.openId) : null, state.snap, nowMs(), drawerHandlers, state.meta);
+  paintPanel();
   ui.selected = state.openId;
   document.querySelectorAll("#board .card").forEach((c) => c.classList.toggle("selected", c.dataset.id === state.openId));
-  R.tickCountdowns(nowMs());
   if (state.view === "board" && state.snap) R.renderBoard(state.snap, nowMs(), ui);
-}
-
-function openFromFeed(id) {
-  setFeed(false);
-  openDrawer(id);
+  S.paint(nowMs(), state.openId);
 }
 
 function setView(v) {
@@ -346,25 +366,9 @@ Sound.loadPrefs("arm", { sound: true, voice: true });
 const paintSound = Sound.bindToggles(document.getElementById("sound-btn"), document.getElementById("voice-btn"));
 
 const menuPop = document.getElementById("menu-pop");
-document.getElementById("menu-btn").onclick = (e) => { e.stopPropagation(); setFeed(false); menuPop.classList.toggle("hidden"); };
-const feedPop = document.getElementById("feed-pop");
-function setFeed(open) {
-  state.feedOpen = open;
-  feedPop.classList.toggle("hidden", !open);
-  document.getElementById("feed-btn").classList.toggle("active", open);
-  if (open && state.snap) {
-    state.feedSeenSeq = state.snap.last_event_seq;
-    R.renderFeedList(state.snap, feedPop, openFromFeed);
-    const b = document.getElementById("feed-btn").getBoundingClientRect();
-    feedPop.style.left = `${Math.max(8, Math.min(b.left, window.innerWidth - feedPop.offsetWidth - 8))}px`;
-    feedPop.style.top = `${b.bottom + 6}px`;
-  }
-  if (state.snap) renderMain();
-}
-document.getElementById("feed-btn").onclick = (e) => { e.stopPropagation(); menuPop.classList.add("hidden"); setFeed(!state.feedOpen); };
-feedPop.onclick = (e) => e.stopPropagation();
+document.getElementById("menu-btn").onclick = (e) => { e.stopPropagation(); menuPop.classList.toggle("hidden"); };
 menuPop.onclick = (e) => e.stopPropagation();
-document.addEventListener("click", () => { menuPop.classList.add("hidden"); if (state.feedOpen) setFeed(false); });
+document.addEventListener("click", () => menuPop.classList.add("hidden"));
 document.querySelectorAll(".tab[data-view]").forEach((t) => (t.onclick = () => setView(t.dataset.view)));
 
 // ---------- начало смены ----------
@@ -430,7 +434,6 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (!document.getElementById("modal").classList.contains("hidden")) closeModal();
     else if (typing) e.target.blur();
-    else if (state.feedOpen) setFeed(false);
     else if (state.openId) openDrawer(null);
     else if (S.isOpen()) { S.hideResults(); search.value = ""; }
   } else if (e.key === "/" && !typing) { e.preventDefault(); search.focus(); }
