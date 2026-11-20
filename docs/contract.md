@@ -162,7 +162,8 @@
 - `POST /api/duplicates/confirm` `{"master_id": "...", "ids": [...], "by": "Ольга"}` → в файл `isMaster: true` у мастера,
   `isDouble: true` у остальных + запись в `workLog`; после перечитывания `duplicates.confirmed = true`.
   Группы берутся из `ai.duplicate_groups()`.
-- История изменений для панели — можно брать из `ai.history(id)` (ИИ копит её сам в `cache/ai_history.json`).
+- История изменений: основная — бэкенда (`refs.history`, передаётся в `ai.enrich(..., refs=refs)`), по ней ИИ ищет
+  тревожную динамику. Без `refs` ИИ копит запасную сам (`ai.history(id)`, `cache/ai_history.json`).
 
 ## Action
 ```jsonc

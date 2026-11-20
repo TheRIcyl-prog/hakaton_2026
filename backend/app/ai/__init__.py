@@ -88,7 +88,7 @@ def duplicate_groups() -> list[dict]:
 
 
 def history(inc_id: str) -> list[dict]:
-    """История изменений инцидента, которую копит ИИ (приоритет, команда, срок, статус)."""
+    """Запасная история изменений, которую копит ИИ (основная — backend/app/history.py)."""
     return _history.get(inc_id)
 
 
@@ -100,17 +100,28 @@ def _meta(source: str, at: str | None) -> dict:
     return {"source": source, "at": at}
 
 
-def enrich(incidents: dict[str, dict], now: datetime, rules: Rules) -> None:
+def _events_source(refs):
+    """История изменений: бэкенда (refs.history, засеяна из workLog), иначе своя (dynamics.History)."""
+    hist = getattr(refs, "history", None) if refs is not None else None
+    if hist is not None and callable(getattr(hist, "get", None)):
+        return hist.get
+    return lambda inc_id: _history.events.get(inc_id)
+
+
+def enrich(incidents: dict[str, dict], now: datetime, rules: Rules, refs=None) -> None:
+    """refs — справочники бэкенда (backend/app/refs.py); из них ИИ берёт только историю изменений."""
     global _dup_groups
     at = _real_now()
     idx = index_mod.build(incidents, rules)
-    _history.observe(incidents, now)
+    events_of = _events_source(refs)
+    if refs is None or getattr(refs, "history", None) is None:
+        _history.observe(incidents, now)      # своя история — запасная, если бэкенд её не дал
     groups = dup_mod.find_groups(incidents, idx)
     dup_of = {i: g for g in groups for i in g["ids"]}
 
     watched: list[tuple[dict, list[str], dict | None]] = []   # кандидаты в GigaChat
     for inc in incidents.values():
-        evs = _history.events.get(inc["id"]) if inc["state_kind"] == "active" else None
+        evs = events_of(inc["id"]) if inc["state_kind"] == "active" else None
         dyn = dyn_mod.detect(inc, evs, now) if evs else None
         g = dup_of.get(inc["id"])
         live = [x for x in inc.get("groups", ()) if x not in inc.get("resolved_in", ())]

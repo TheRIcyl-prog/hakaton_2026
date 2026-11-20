@@ -154,3 +154,30 @@ def test_enrich_5000_is_fast(rules):
 def test_dynamics_detect_ignores_closed():
     evs = [{"at": iso(NOW), "kind": "reopen", "before": "Завершен", "after": "Выполняется"}]
     assert dynamics.detect({"state_kind": "closed"}, evs, NOW) is None
+
+
+def test_dynamics_from_backend_history_seen_on_first_load(rules):
+    """История бэкенда (refs.history, засеяна из workLog) — нарастание видно сразу, без двух чтений файла."""
+    class Hist:
+        def get(self, inc_id):
+            if inc_id != "W":
+                return []
+            return [  # формат backend/app/history.py: без "up", с before_id/after_id, другие поля игнорируем
+                {"at": "2026-11-10T11:50:00.500000Z", "kind": "priority", "before": "Средний", "after": "Высокий",
+                 "before_id": 2, "after_id": 3, "by": "Ольга"},
+                {"at": "2026-11-10T11:20:00Z", "kind": "priority", "before": "Низкий", "after": "Средний",
+                 "before_id": 1, "after_id": 2, "by": "itsm"},
+                {"at": "2026-11-10T11:30:00Z", "kind": "assignee", "before": None, "after": "x"},
+            ]
+
+    class Refs:
+        history = Hist()
+        changed = {"W"}
+
+    incs, _ = adapt_all([make("W", 2, 3), make("Q", 2, 3)], rules, "{id}")
+    assign_groups(incs, rules, NOW)
+    ai.enrich(incs, NOW, rules, refs=Refs())
+    d = incs["W"]["ai"]["dynamics"]
+    assert d and "Низкий → Средний → Высокий за 30 мин" in d["text"]
+    assert incs["Q"]["ai"]["dynamics"] is None
+    assert ai.history("W") == []          # своя история не копится, когда есть бэкенда

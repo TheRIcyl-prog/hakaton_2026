@@ -124,8 +124,41 @@ class History:
 
 
 def _within(evs: list[dict], now: datetime, window: timedelta) -> list[dict]:
-    border = iso(now - window)
-    return [e for e in evs if e["at"] >= border]
+    border = now - window
+    return [e for e in evs if (at := parse_dt(e.get("at"))) and at >= border]
+
+
+def _is_up(e: dict) -> bool:
+    if "up" in e:
+        return bool(e["up"])
+    b, a = e.get("before_id"), e.get("after_id")
+    return isinstance(b, int) and isinstance(a, int) and a > b
+
+
+def _is_later(e: dict) -> bool:
+    if "later" in e:
+        return bool(e["later"])
+    b, a = parse_dt(e.get("before")), parse_dt(e.get("after"))
+    return bool(a and b and a > b)
+
+
+def _normalize(evs: list[dict]) -> list[dict]:
+    """События из истории бэкенда (refs.history) или своей: по времени, с up/later/shift_min."""
+    out = []
+    for e in evs:
+        if not isinstance(e, dict) or not e.get("at") or not e.get("kind"):
+            continue
+        e = dict(e)
+        if e["kind"] == "priority":
+            e["up"] = _is_up(e)
+        elif e["kind"] == "deadline":
+            e["later"] = _is_later(e)
+            if e.get("shift_min") is None:
+                b, a = parse_dt(e.get("before")), parse_dt(e.get("after"))
+                e["shift_min"] = round((a - b).total_seconds() / 60) if a and b else None
+        out.append(e)
+    out.sort(key=lambda e: parse_dt(e["at"]) or datetime.min.replace(tzinfo=timezone.utc))
+    return out
 
 
 def _span(evs: list[dict], now: datetime) -> str:
@@ -138,9 +171,10 @@ def detect(inc: dict, evs: list[dict], now: datetime) -> dict | None:
     """Шаблоны для одного активного инцидента. → {"patterns": [...], "text": "…", "boost": int} или None."""
     if inc.get("state_kind") != "active" or not evs:
         return None
+    evs = _normalize(evs)
     patterns: list[dict] = []
 
-    ups = [e for e in _within(evs, now, PRIO_UP_WINDOW) if e["kind"] == "priority" and e.get("up")]
+    ups = [e for e in _within(evs, now, PRIO_UP_WINDOW) if e["kind"] == "priority" and e["up"]]
     if len(ups) >= PRIO_UP_N:
         chain = " → ".join([ups[0]["before"] or "?"] + [e["after"] or "?" for e in ups])
         patterns.append({"kind": "priority_up", "count": len(ups),
@@ -153,7 +187,7 @@ def detect(inc: dict, evs: list[dict], now: datetime) -> dict | None:
                                  f"за {_span(moves, now)}: " + " → ".join(
                                      [moves[0]["before"] or "—"] + [e["after"] or "—" for e in moves])})
 
-    later = [e for e in evs if e["kind"] == "deadline" and e.get("later")]
+    later = [e for e in evs if e["kind"] == "deadline" and e["later"]]
     if len(later) >= DEADLINE_N:
         shifts = ", ".join(f"+{minutes_text(e['shift_min'])}" for e in later if e.get("shift_min"))
         patterns.append({"kind": "deadline_moved", "count": len(later),
