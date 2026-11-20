@@ -1,7 +1,7 @@
 // Отрисовка — общая для АРМ координатора и видеостены (ui.wall).
 // Карточки кэшируются по подписи (hash + группы + ИИ + «в работе» + журнал), чтобы не мигать
 // и не сбрасывать подсветку; таймеры обновляются отдельно раз в секунду.
-import { esc, fmtDateTime, fmtTime, fmtLeft, plural, shortId } from "./format.js";
+import { esc, fmtDateTime, fmtTime, fmtLeft, fmtTimer, fmtWhen, plural, shortId } from "./format.js";
 import { isDup } from "./filters.js";
 
 const GROUP_SHORT = { critical: "критические", coordinators: "на координаторах", high: "высокий", research: "исследование" };
@@ -13,7 +13,6 @@ const COUNTER_LABEL = {
 };
 const COUNTER_SHORT = { critical: "Критические", coordinators: "На координаторах", high: "Высокий", research: "Исследование" };
 const FORECAST_TEXT = { ok: "успевают", risk: "срок на исходе", breach: "прогноз: не успеют", overdue: "срок нарушен" };
-const FORECAST_SHORT = { ok: "успевают", risk: "на исходе", breach: "не успеют", overdue: "" };
 const RISK_TEXT = { high: "высокий", medium: "средний", low: "низкий" };
 const AI_SOURCE = { rules: "правила по истории", gigachat: "GigaChat", cache: "GigaChat (кэш)" };
 
@@ -163,7 +162,7 @@ function matches(inc, q) {
   return q.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
 }
 
-// ui: {query, changed, wall, open, predicate, limits, more, selected, why, alarmIds, actions, act}
+// ui: {query, changed, wall, open, predicate, limits, more, selected, alarmIds, actions, act}
 export function renderBoard(snap, nowMs, ui) {
   const board = $("#board");
   if (!board.children.length || board.dataset.groups !== snap.groups.map((g) => g.key).join(",")) {
@@ -196,16 +195,14 @@ export function renderBoard(snap, nowMs, ui) {
       const changed = ui.changed.get(id);
       const claim = ownerOf(inc, snap);
       const action = ui.actions ? ui.actions.get(id) : null;
-      const why = ui.why ? ui.why.has(key) : false;
       const sig = [inc.hash, inc.groups.join(), inc.resolved_in.join(), JSON.stringify(inc.ai), inc.forecast && inc.forecast.level,
-        claim ? claim.by : "", inc.work_log.length, changed ? changed.until : 0, action ? action.id : "", why].join("|");
+        claim ? claim.by : "", inc.work_log.length, changed ? changed.until : 0, action ? action.id : ""].join("|");
       let entry = cardCache.get(key);
       if (!entry || entry.sig !== sig) {
         const el = entry ? entry.el : document.createElement("article");
-        el.className = "card";
         el.dataset.id = id;
         if (ui.wall) fillCardWall(el, inc, g.key, nowMs, changed, claim);
-        else fillCardArm(el, inc, g.key, nowMs, changed, claim, action, why, ui.act);
+        else fillCardArm(el, inc, g.key, nowMs, changed, claim, action, ui.act);
         if (ui.open) el.onclick = () => ui.open(id);
         entry = { sig, el };
         cardCache.set(key, entry);
@@ -265,47 +262,88 @@ function linkTags(inc) {
   return t.map((x) => `<span class="tag-dup" title="Связанные инциденты">${x}</span>`).join("");
 }
 
-// Карточка АРМ: продукт, суть, сколько осталось и одно действие. Остальное — в панели справа.
-function fillCardArm(el, inc, group, nowMs, changed, claim, action, why, act) {
-  const resolvedHere = inc.resolved_in.includes(group);
-  el.classList.toggle("is-critical", inc.priority_level === "critical" && !resolvedHere);
-  el.classList.toggle("is-resolved", resolvedHere);
-  el.classList.toggle("flash", !!changed && changed.until > Date.now());
+// Пять полей из задания — на карточке: продукт, возник, исполнитель «команда / сотрудник», статус, срок-таймер.
+export function cardTitle(inc) {
+  // выжимка ИИ вместо длинной сути (оригинал — в панели); префикс «Продукт:» у выжимки срезаем — продукт уже в шапке
+  const sum = inc.ai && inc.ai.summary;
+  if (sum && (!inc.title || inc.title.length > 60)) {
+    const p = (inc.product || "") + ":";
+    return { text: sum.startsWith(p) ? sum.slice(p.length).trim() : sum, ai: true };
+  }
+  return { text: inc.title || inc.short_description || "—", ai: false };
+}
 
-  const ai = inc.ai || {};
+function executor(inc, wall) {
+  const team = inc.team || "команда не указана";
+  if (wall) return esc(team);
+  return `${esc(team)} / ${inc.assignee ? esc(firstName(inc.assignee)) : `<span class="dim">сотрудник не назначен</span>`}`;
+}
+
+// Таймер срока. Текст и цвет обновляет tickCountdowns раз в секунду.
+function timer(inc, nowMs) {
+  if (inc.state_kind !== "active") return "";
+  if (!inc.deadline) {
+    return inc.priority_level === "critical"
+      ? `<span class="no-deadline warn" title="у активного критического не задан срок">нет срока</span>`
+      : `<span class="no-deadline">срок не задан</span>`;
+  }
   const fc = inc.forecast;
+  return `<span class="countdown" data-deadline="${esc(inc.deadline)}" data-start="${esc(inc.created_at || "")}" data-fc="${esc(fc ? fc.level : "")}" title="срок ${esc(fmtDateTime(inc.deadline, nowMs))}${fc ? " · " + esc(FORECAST_TEXT[fc.level] + " · " + fc.basis) : ""}"></span>`;
+}
+
+// Строка ИИ: на координаторах — кому передать; иначе «нарастает» (динамика) или высокий риск
+function aiLineFor(inc, group) {
+  const ai = inc.ai || {};
+  if (group === "coordinators" && ai.route) {
+    const conf = ai.route.confidence_text || `${Math.round((ai.route.confidence || 0) * 100)}%`;
+    return `<div class="ai-line route">${aiTag(ai)}передать в «<b>${esc(ai.route.team)}</b>», ${esc(conf)}</div>`;
+  }
+  if (ai.dynamics && ai.dynamics.flag) {
+    return `<div class="ai-line dyn">${aiTag(ai)}<b>${esc(ai.dynamics.label || "нарастает")}</b>${ai.dynamics.text ? ": " + esc(ai.dynamics.text) : ""}</div>`;
+  }
+  if (ai.risk && ai.risk.level === "high") {
+    return `<div class="ai-line">${aiTag(ai)}риск стать критическим: <b class="risk-high">высокий · ${ai.risk.score}</b></div>`;
+  }
+  return "";
+}
+
+const ownerName = (inc) => (inc.coordinator && inc.coordinator.name ? firstName(inc.coordinator.name) : "");
+
+// Решённый в этой группе (висит 30 мин) — сжатая зелёная строка «решён в 14:05»
+function fillResolvedLine(el, inc, nowMs, wall) {
+  el.className = "card is-resolved one-line";
+  el.innerHTML = `<span class="ok">✓</span><b class="card-product">${esc(inc.product || "—")}</b>
+    <span class="line-title">${esc(cardTitle(inc).text)}</span>
+    <span class="line-when">решён${inc.resolved_at ? " в " + esc(fmtWhen(inc.resolved_at, nowMs)) : ""}${!wall && ownerName(inc) ? " · " + esc(ownerName(inc)) : ""}</span>`;
+}
+
+function stateNote(inc, nowMs) {
+  if (inc.state_kind === "active") return "";
+  const when = inc.resolved_at ? " " + esc(fmtWhen(inc.resolved_at, nowMs)) : "";
+  return `<div class="resolved-note">✓ ${inc.state_kind === "research" ? `решён${when}, идёт разбор причин` : `${esc(inc.state || "решён")}${when}`}</div>`;
+}
+
+const metaLine = (inc, nowMs, wall) =>
+  `<div class="card-meta1">возник ${esc(fmtWhen(inc.created_at, nowMs))} · ${executor(inc, wall)} · <span class="st st-${inc.state_kind}">${esc(inc.state || "—")}</span></div>`;
+
+// Карточка АРМ
+function fillCardArm(el, inc, group, nowMs, changed, claim, action, act) {
+  if (inc.resolved_in.includes(group)) { fillResolvedLine(el, inc, nowMs, false); return; }
+  el.className = "card";
+  el.classList.toggle("is-critical", inc.priority_level === "critical");
+  el.classList.toggle("flash", !!changed && changed.until > Date.now());
   const also = inc.groups.filter((g) => g !== group).map((g) => GROUP_SHORT[g]);
-  const key = `${group}:${inc.id}`;
+  const t = cardTitle(inc);
+  const active = inc.state_kind === "active";
 
-  let time;
-  if (resolvedHere || inc.state_kind !== "active") {
-    time = `<div class="resolved-note">✓ ${inc.state_kind === "research" ? "решён, идёт разбор" : "решён" + (inc.resolved_at ? " " + esc(fmtDateTime(inc.resolved_at, nowMs)) : "")}</div>`;
-  } else {
-    time = `<div class="card-time">
-      <span class="countdown" data-deadline="${esc(inc.deadline || "")}">${inc.deadline ? "" : "срок —"}</span>
-      ${fc && FORECAST_SHORT[fc.level] ? `<span class="fc fc-${fc.level}" title="${esc(FORECAST_TEXT[fc.level] + " · " + fc.basis)}">${FORECAST_SHORT[fc.level]}</span>` : ""}
-    </div>`;
-  }
-
-  let aiLine = "", whyText = "", buttons = [];
-  if (group === "coordinators" && !resolvedHere) {
-    if (ai.route) {
-      aiLine = `<div class="ai-line route">${aiTag(ai)}в «<b>${esc(ai.route.team)}</b>», ${Math.round(ai.route.confidence * 100)}%</div>`;
-      whyText = esc(ai.route.reason) + (ai.route.alternatives && ai.route.alternatives.length
-        ? `<br>ещё: ${ai.route.alternatives.slice(0, 2).map((x) => `${esc(x.team)} ${Math.round(x.score * 100)}%`).join(", ")}` : "");
-    }
-    if (inc.state_kind !== "resolved" && inc.state_kind !== "closed") buttons.push(`<button class="btn small btn-primary" data-act="transfer">${ai.route ? "Передать" : "Выбрать команду"}</button>`);
-  } else if (group === "high" && ai.risk && !resolvedHere) {
-    aiLine = `<div class="ai-line">${aiTag(ai)}риск: <b class="risk-${ai.risk.level}">${RISK_TEXT[ai.risk.level] || ai.risk.level}</b> · ${ai.risk.score}</div>`;
-    whyText = esc(ai.risk.factors.join(" · ") || "значимых факторов нет");
-  }
-  if (action && action.kind === "escalate" && !resolvedHere) buttons.push(`<button class="btn small btn-primary" data-act="escalate">Эскалировать</button>`);
-  if (whyText) buttons.push(`<button class="btn small btn-ghost" data-act="why">${why ? "скрыть" : "почему?"}</button>`);
-
+  const buttons = [];
+  if (claim) buttons.push(`<span class="owner" title="координатор с ${esc(fmtTime(claim.at))}">в работе у ${esc(firstName(claim.by))}</span>`);
+  else if (active) buttons.push(`<button class="btn small btn-take" data-act="claim" title="Клавиша В">Взять в работу</button>`);
+  if (group === "coordinators" && active) buttons.push(`<button class="btn small btn-primary" data-act="transfer">Передать</button>`);
+  if (action && action.kind === "escalate" && active) buttons.push(`<button class="btn small" data-act="escalate">Эскалировать</button>`);
   const esc_ = lastEscalation(inc);
-  const foot = [
-    claim ? `<span class="owner" title="в работе у координатора">👤 ${esc(firstName(claim.by))}</span>` : "",
-    esc_ ? `<span class="escalated" title="эскалирован">⇪ ${esc(fmtTime(esc_.at))}</span>` : "",
+  const tags = [
+    esc_ ? `<span class="escalated" title="эскалирован">⇪ эскалирован ${esc(fmtTime(esc_.at))}</span>` : "",
     also.length ? `<span class="also" title="также в группах">также: ${also.join(", ")}</span>` : "",
   ].filter(Boolean).join("");
 
@@ -313,84 +351,73 @@ function fillCardArm(el, inc, group, nowMs, changed, claim, action, why, act) {
     <div class="card-top">
       <span class="card-product">${esc(inc.product || "—")}</span>
       ${linkTags(inc)}
-      ${inc.priority_level === "critical" ? "" : `<span class="card-prio prio-${inc.priority_level}">${esc(inc.priority || "")}</span>`}
+      <span class="card-prio prio-${inc.priority_level}">${esc(inc.priority || "")}</span>
+      ${timer(inc, nowMs)}
     </div>
-    <div class="card-title">${esc(inc.title)}</div>
-    ${time}
-    ${aiLine}
-    ${why && whyText ? `<div class="why">${whyText}</div>` : ""}
+    <div class="card-title" title="${esc(inc.title || "")}">${t.ai ? aiTag(inc.ai) : ""}${esc(t.text)}</div>
+    ${metaLine(inc, nowMs, false)}
+    ${stateNote(inc, nowMs)}
+    ${aiLineFor(inc, group)}
     ${buttons.length ? `<div class="card-btns">${buttons.join("")}</div>` : ""}
-    ${foot ? `<div class="card-foot">${foot}</div>` : ""}
+    ${tags ? `<div class="card-foot">${tags}</div>` : ""}
     ${changed && changed.until > Date.now() ? `<div class="changed">● ${esc(changed.texts.join(" · "))}</div>` : ""}`;
 
   const on = (sel, fn) => { const b = el.querySelector(sel); if (b) b.onclick = (e) => { e.stopPropagation(); fn(); }; };
   if (act) {
+    on("[data-act=claim]", () => act.claim(inc.id));
     on("[data-act=transfer]", () => act.transfer(inc.id));
     on("[data-act=escalate]", () => act.escalate(inc.id, action && action.draft));
-    on("[data-act=why]", () => act.why(key));
   }
 }
 
-// Карточка стены: крупно и с метаданными — читается с другого конца зала
+// Карточка стены: крупно, без кнопок, ИИ и номера; исполнитель — только команда; «в работе у Ольги»
 function fillCardWall(el, inc, group, nowMs, changed, claim) {
-  const resolvedHere = inc.resolved_in.includes(group);
-  el.classList.toggle("is-critical", inc.priority_level === "critical" && !resolvedHere);
-  el.classList.toggle("is-resolved", resolvedHere);
+  if (inc.resolved_in.includes(group)) { fillResolvedLine(el, inc, nowMs, true); return; }
+  el.className = "card";
+  el.classList.toggle("is-critical", inc.priority_level === "critical");
   el.classList.toggle("flash", !!changed && changed.until > Date.now());
-
-  const also = inc.groups.filter((g) => g !== group).map((g) => GROUP_SHORT[g]);
   const fc = inc.forecast;
-  const ai = inc.ai || {};
-  const aiLine = ai.route && group === "coordinators"
-    ? `<div class="ai-line route">${aiTag(ai)}→ <b>${esc(ai.route.team)}</b> · ${Math.round(ai.route.confidence * 100)}%</div>` : "";
   const esc_ = lastEscalation(inc);
   const workLine = [
-    claim ? `<span class="owner">👤 в работе: ${esc(firstName(claim.by))}</span>` : "",
-    esc_ ? `<span class="escalated">⇪ эскалирован ${esc(fmtTime(esc_.at))}${esc_.author ? " · " + esc(firstName(esc_.author)) : ""}</span>` : "",
+    claim ? `<span class="owner">в работе у ${esc(firstName(claim.by))}</span>` : "",
+    esc_ ? `<span class="escalated">⇪ эскалирован ${esc(fmtTime(esc_.at))}</span>` : "",
   ].filter(Boolean).join("");
-  const deadlineBlock = resolvedHere || inc.state_kind !== "active"
-    ? `<div class="resolved-note">✓ решён ${inc.resolved_at ? esc(fmtDateTime(inc.resolved_at, nowMs)) : ""}${inc.state_kind === "research" ? " · идёт разбор причин" : " · " + esc(inc.state)}</div>`
-    : `<div class="deadline">
-        <div class="deadline-row">
-          <span class="countdown" data-deadline="${esc(inc.deadline || "")}">${inc.deadline ? "" : "срок —"}</span>
-          <small>${inc.deadline ? "до " + esc(fmtDateTime(inc.deadline, nowMs)) : ""}</small>
-        </div>
-        ${fc ? `<div class="bar ${fc.level}"><i style="width:${Math.min(100, fc.progress * 100)}%"></i></div>
-        <div class="forecast ${fc.level}" title="${esc(fc.basis)}">${FORECAST_TEXT[fc.level]}${fc.median_minutes ? ` · обычно ~${fc.median_minutes} мин` : ""}</div>` : ""}
-      </div>`;
-
   el.innerHTML = `
     <div class="card-top">
       <span class="card-product">${esc(inc.product || "—")}</span>
       <span class="card-prio prio-${inc.priority_level}">${esc(inc.priority || "")}</span>
     </div>
-    <div class="card-title">${esc(inc.title)}</div>
-    <div class="card-meta">
-      <span>${esc(shortId(inc.id))}</span><b>${esc(fmtDateTime(inc.created_at, nowMs))}</b>
-      <span>команда</span><b title="${esc(inc.team)}">${esc(inc.team || "—")}</b>
-    </div>
-    ${deadlineBlock}
-    ${aiLine}
+    <div class="card-title">${esc(cardTitle(inc).text)}</div>
+    ${metaLine(inc, nowMs, true)}
+    ${inc.state_kind === "active" ? `<div class="deadline">
+        <div class="deadline-row">${timer(inc, nowMs)}${inc.deadline ? `<small>до ${esc(fmtWhen(inc.deadline, nowMs))}</small>` : ""}</div>
+        ${fc ? `<div class="bar ${fc.level}"><i style="width:${Math.min(100, fc.progress * 100)}%"></i></div>` : ""}
+      </div>` : stateNote(inc, nowMs)}
     ${workLine ? `<div class="work-line">${workLine}</div>` : ""}
-    ${changed && changed.until > Date.now() ? `<div class="changed">● ${esc(changed.texts.join(" · "))}</div>` : ""}
-    ${also.length ? `<div class="also">также в: <span>${also.join(", ")}</span></div>` : ""}`;
+    ${changed && changed.until > Date.now() ? `<div class="changed">● ${esc(changed.texts.join(" · "))}</div>` : ""}`;
 }
 
-// Таймеры раз в секунду
+// Таймеры раз в секунду: жёлтый при ≥75% срока или прогнозе «не успеют», красный < 15 мин, просроченный мигает
 export function tickCountdowns(nowMs) {
-  const left = document.body.classList.contains("wall") ? "" : "осталось ";
+  const wall = document.body.classList.contains("wall");
   document.querySelectorAll("[data-deadline]").forEach((el) => {
     const dl = el.dataset.deadline;
     if (!dl) return;
-    const sec = (Date.parse(dl) - nowMs) / 1000;
+    const end = Date.parse(dl);
+    const sec = (end - nowMs) / 1000;
     if (el.classList.contains("alert-time")) {
       el.textContent = (sec < 0 ? "просрочен " : "до срока ") + fmtLeft(sec);
     } else if (el.classList.contains("countdown-mini")) {
       el.textContent = sec < 0 ? "просрочен" : fmtLeft(sec);
     } else {
-      el.textContent = sec < 0 ? `просрочен ${fmtLeft(-sec)}` : left + fmtLeft(sec);
+      const text = fmtTimer(sec);
+      el.textContent = wall ? text.replace("осталось ", "") : text;
+      const start = Date.parse(el.dataset.start || "");
+      const frac = start && end > start ? (nowMs - start) / (end - start) : 0;
+      const fc = el.dataset.fc;
       el.classList.toggle("overdue", sec < 0);
-      el.classList.toggle("soon", sec >= 0 && sec < 3600);
+      el.classList.toggle("danger", sec >= 0 && sec < 900);
+      el.classList.toggle("warn", sec >= 900 && (frac >= 0.75 || fc === "breach" || fc === "risk"));
     }
   });
 }

@@ -16,13 +16,13 @@ const state = {
   view: loadView(), feedOpen: false, feedSeenSeq: null,
 };
 const ui = {
-  query: "", changed: new Map(), open: (id) => openDrawer(id), predicate: null, limits: {}, why: new Set(),
+  query: "", changed: new Map(), open: (id) => openDrawer(id), predicate: null, limits: {},
   selected: null, alarmIds: new Set(), actions: new Map(),
   more: (key) => { ui.limits[key] = (ui.limits[key] || 60) + 60; renderMain(); },
   act: {
     transfer: (id) => doTransfer(id),
     escalate: (id, draft) => doEscalate(id, draft),
-    why: (key) => { ui.why.has(key) ? ui.why.delete(key) : ui.why.add(key); renderMain(); },
+    claim: (id) => doClaim(id),
   },
 };
 const nowMs = () => Date.now() + state.offsetMs;

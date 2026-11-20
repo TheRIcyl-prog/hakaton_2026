@@ -33,6 +33,26 @@ export function fmtDateTime(iso, nowMs) {
   return `${pad(d.getUTCDate())}.${pad(d.getUTCMonth() + 1)} ${time}`;
 }
 
+// «14:05» сегодня, «вчера 21:42», иначе «18.11 21:42» — для «возник» на карточке
+export function fmtWhen(iso, nowMs) {
+  const t = fmtDateTime(iso, nowMs);
+  return t.startsWith("сегодня ") ? t.slice(8) : t;
+}
+
+// Таймер карточки: «осталось 42:10» (последний час посекундно), «осталось 5 ч 02 мин», «осталось 2 дня»,
+// «просрочен на 12 мин», «просрочен на 2 ч 05 мин», «просрочен на 3 дня»
+export function fmtTimer(sec) {
+  const neg = sec < 0;
+  const s = Math.abs(Math.floor(sec));
+  const d = Math.floor(s / 86400), h = Math.floor(s / 3600), m = Math.floor(s / 60);
+  let out;
+  if (d >= 1) out = `${d} ${plural(d, "день", "дня", "дней")}${!neg && d < 3 && h % 24 ? ` ${h % 24} ч` : ""}`;
+  else if (h >= 1) out = `${h} ч ${pad(m % 60)} мин`;
+  else if (neg) out = `${Math.max(1, m)} мин`;
+  else out = `${m}:${pad(s % 60)}`;
+  return neg ? `просрочен на ${out}` : `осталось ${out}`;
+}
+
 export function plural(n, one, few, many) {
   const a = Math.abs(n) % 100, b = a % 10;
   if (a > 10 && a < 20) return many;
