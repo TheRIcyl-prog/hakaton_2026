@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from . import ai as ai_layer
 from .config import ROOT, Settings, load_rules
 from .desk import DeskState
+from .history import History
 from .itsm import Itsm, ItsmError
 from .store import Store
 
@@ -22,9 +23,12 @@ log = logging.getLogger("dashboard")
 settings = Settings()
 ai_layer.setup()
 rules = load_rules(settings.rules_file)
-store = Store(settings, rules, desk=DeskState(ROOT / "cache" / "desk_state.json"))
-itsm = Itsm(settings.incidents_file, rules, store.clock.now)
+store = Store(settings, rules, desk=DeskState(ROOT / "cache" / "desk_state.json"),
+              history=History(ROOT / "cache" / "history.jsonl"))
+itsm = Itsm(settings.incidents_file, rules, store.clock.now, store=store,
+            backup_dir=settings.backups_dir, backups_keep=settings.backups_keep)
 BOOT_ID = uuid.uuid4().hex[:8]  # ETag меняется после перезапуска, даже если version совпал
+store.snapshot_extra["boot_id"] = BOOT_ID
 
 
 async def _poll_loop() -> None:
@@ -56,6 +60,7 @@ def health():
         "version": store.version,
         "time_mode": store.clock.mode,
         "incidents": len(store.incidents),
+        "last_apply_seconds": round(store.last_apply_seconds, 3),
         "ai": ai_layer.status(),
     }
 
@@ -65,7 +70,26 @@ def snapshot(request: Request):
     etag = f'"{BOOT_ID}-{store.version}"'
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers={"ETag": etag})
-    return JSONResponse({**store.snapshot(), "boot_id": BOOT_ID}, headers={"ETag": etag, "Cache-Control": "no-cache"})
+    # Снимок сериализуется и сжимается один раз на версию — для стены и всех АРМ
+    gz = "gzip" in (request.headers.get("accept-encoding") or "")
+    body, version = store.snapshot_bytes(gz)
+    headers = {"ETag": f'"{BOOT_ID}-{version}"', "Cache-Control": "no-cache", "X-Boot-Id": BOOT_ID, "Vary": "Accept-Encoding"}
+    if gz:
+        headers["Content-Encoding"] = "gzip"
+    return Response(body, media_type="application/json", headers=headers)
+
+
+@app.get("/api/search")
+def search(q: str = "", status: str = "all", product: str | None = None, team: str | None = None,
+           priority: str | None = None, coordinator: str | None = None, group: str | None = None,
+           overdue: bool = False, burning: bool = False, untaken: bool = False, unassigned: bool = False,
+           risk_high: bool = False, duplicates: bool = False, service_type: str | None = None,
+           new_hour: bool = False, limit: int = 100, offset: int = 0):
+    """Поиск и фильтры по ВСЕМ инцидентам (в снимке — только видимые). Списки — через запятую."""
+    return store.search(q, limit=limit, offset=max(0, offset), status=status, product=product, team=team,
+                        priority=priority, coordinator=coordinator, group=group, overdue=overdue, burning=burning,
+                        untaken=untaken, unassigned=unassigned, risk_high=risk_high, duplicates=duplicates,
+                        service_type=service_type, new_hour=new_hour)
 
 
 @app.get("/api/events")
@@ -81,38 +105,25 @@ def incident(inc_id: str):
     return inc
 
 
-# ---------- смена: «Принял», «Взять в работу» (общие для стены и всех АРМ) ----------
+# ---------- «Взять в работу» / «Отпустить» — пишутся в файл (поле coordinator), снимают тревогу у всех ----------
 class By(BaseModel):
     by: str
+    expected_hash: str | None = None   # hash инцидента, который видел координатор; изменился → 409 с тем, что поменялось
 
 
-class AckBody(By):
-    key: str
-
-
-@app.post("/api/alerts/ack")
-def ack(body: AckBody):
-    if not body.by.strip():
-        raise HTTPException(400, "укажите имя координатора")
-    if not store.ack(body.key, body.by.strip()):
-        raise HTTPException(404, "тревога уже неактуальна")
-    return {"ok": True}
+class TakeBody(By):
+    force: bool = False                # забрать у другого координатора
 
 
 @app.post("/api/incidents/{inc_id}/claim")
-def claim(inc_id: str, body: By):
-    if inc_id not in store.incidents:
-        raise HTTPException(404, "нет такого инцидента")
-    if not body.by.strip():
-        raise HTTPException(400, "укажите имя координатора")
-    store.claim(inc_id, body.by.strip())
-    return {"ok": True}
+def claim(inc_id: str, body: TakeBody):
+    return _run(inc_id, lambda: itsm.take(inc_id, body.by, body.expected_hash, body.force))
 
 
 @app.delete("/api/incidents/{inc_id}/claim")
-def release(inc_id: str):
-    store.release(inc_id)
-    return {"ok": True}
+def release(inc_id: str, by: str = "", expected_hash: str | None = None):
+    # by — query-параметр (у DELETE тела обычно нет); старый фронт его не шлёт — тогда «координатор»
+    return _run(inc_id, lambda: itsm.release(inc_id, by or "координатор", expected_hash))
 
 
 # ---------- мини-ITSM: действия пишутся в файл инцидентов ----------
@@ -149,31 +160,32 @@ class EscalateBody(By):
 
 def _run(inc_id: str, fn):
     try:
-        fn()
+        fn()  # запись применяется в Store сразу, без перечитывания файла
     except ItsmError as e:
+        if e.detail:
+            return JSONResponse({"detail": str(e), **e.detail}, status_code=e.status)
         raise HTTPException(e.status, str(e))
-    store.poll()  # сразу перечитать файл — экран обновится без ожидания опроса
     return store.incident(inc_id)
 
 
 @app.post("/api/itsm/{inc_id}/assign")
 def itsm_assign(inc_id: str, b: AssignBody):
-    return _run(inc_id, lambda: itsm.assign(inc_id, b.team, b.by, b.assignee, b.comment))
+    return _run(inc_id, lambda: itsm.assign(inc_id, b.team, b.by, b.assignee, b.comment, b.expected_hash))
 
 
 @app.post("/api/itsm/{inc_id}/state")
 def itsm_state(inc_id: str, b: StateBody):
-    return _run(inc_id, lambda: itsm.set_state(inc_id, b.state_id, b.by, b.reason, b.comment))
+    return _run(inc_id, lambda: itsm.set_state(inc_id, b.state_id, b.by, b.reason, b.comment, b.expected_hash))
 
 
 @app.post("/api/itsm/{inc_id}/priority")
 def itsm_priority(inc_id: str, b: PriorityBody):
-    return _run(inc_id, lambda: itsm.set_priority(inc_id, b.priority_id, b.by, b.recalc_deadline, b.comment))
+    return _run(inc_id, lambda: itsm.set_priority(inc_id, b.priority_id, b.by, b.recalc_deadline, b.comment, b.expected_hash))
 
 
 @app.post("/api/itsm/{inc_id}/deadline")
 def itsm_deadline(inc_id: str, b: DeadlineBody):
-    return _run(inc_id, lambda: itsm.set_deadline(inc_id, b.deadline, b.by, b.comment))
+    return _run(inc_id, lambda: itsm.set_deadline(inc_id, b.deadline, b.by, b.comment, b.expected_hash))
 
 
 @app.post("/api/itsm/{inc_id}/comment")
@@ -184,6 +196,22 @@ def itsm_comment(inc_id: str, b: CommentBody):
 @app.post("/api/itsm/{inc_id}/escalate")
 def itsm_escalate(inc_id: str, b: EscalateBody):
     return _run(inc_id, lambda: itsm.escalate(inc_id, b.by, b.comment))
+
+
+class DuplicatesBody(BaseModel):
+    master_id: str
+    ids: list[str]
+    by: str
+
+
+@app.post("/api/duplicates/confirm")
+def confirm_duplicates(b: DuplicatesBody):
+    """«Да, это один сбой»: isMaster у мастера, isDouble у остальных + журнал (п. 8.4)."""
+    try:
+        itsm.confirm_duplicates(b.master_id, b.ids, b.by)
+    except ItsmError as e:
+        raise HTTPException(e.status, str(e))
+    return {"ok": True, "incidents": [store.incident(i) for i in dict.fromkeys([b.master_id, *b.ids])]}
 
 
 @app.get("/api/meta")
@@ -210,10 +238,10 @@ def export_file():
 async def import_file(request: Request):
     text = (await request.body()).decode("utf-8-sig", errors="replace")
     try:
-        n = itsm.import_file(text, ROOT / "cache" / "backups")
+        n = itsm.import_file(text, settings.backups_dir)
     except ItsmError as e:
         raise HTTPException(e.status, str(e))
-    store.poll()
+    store.poll(force=True)
     return {"ok": True, "count": n}
 
 

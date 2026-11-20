@@ -1,14 +1,26 @@
-"""Генератор своего демо-файла в формате МТС (менторы разрешили свои данные).
+"""Генератор демо-файла «Сказочное королевство» в формате МТС (менторы разрешили свои данные).
 
-    python scripts/make_demo.py            # → data/demo/incidents.json (даты относительно «сейчас»)
-    python scripts/make_demo.py --use      # и сразу сделать его рабочим data/incidents.json
+    python scripts/make_demo.py                 # → data/demo/incidents.json, 5 000 инцидентов, даты от «сейчас»
+    python scripts/make_demo.py --use           # и сразу сделать его рабочим data/incidents.json
+    python scripts/make_demo.py --count 10000   # другой объём (для замеров)
+    python scripts/make_demo.py --out путь.json
 
-Что внутри: история решённых инцидентов (для подсказки «куда передать» и прогноза срока),
-активные инциденты всех групп, всплеск по одному сервису (массовость: мастер + дубли),
-инцидент на исследовании у координаторов. Детерминировано (seed), меняются только даты.
+Смотреть с TIME_MODE=real (даты свежие). Детерминировано (seed): меняются только даты.
+
+Что внутри (decisions.md, п. 2):
+- история за 30 дней: решённые и закрытые — для подсказки «кому передать» и прогноза срока;
+- ~10% активных (по сервису не чаще раза в 2 ч — без ложных дублей): средние и низкие (вне групп — для поиска и счётчика «ещё N вне групп»), высокие, исследование;
+- герои демо с постоянными номерами (их трогает scripts/demo.py):
+  INC000030000001 критический в работе (мастер)       INC000030000002 критический И на координаторах
+  INC000030000003 высокий, срок горит — кандидат в критические (риск)
+  INC000030000004 на координаторах → передать          INC000030000005 исследование → назначат на координаторов
+  INC000030000006 средний → назначат на координаторов  INC000030000007 нарастающий приоритет (2 повышения за час)
+  INC000030000011…16 — 6 дублей «Зеркальца» (одна поломка, разные обращения; флаги дублей не стоят — их находит ИИ)
+  ещё 5 инцидентов на координаторах с разным временем ожидания.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import random
 import sys
@@ -24,54 +36,101 @@ STATES = {0: ("Назначен", "Assigned"), 2: ("Выполняется", "Wo
 PRIO = {1: "Низкий", 2: "Средний", 3: "Высокий", 4: "Наивысший"}
 URG = {1: "Низкая", 2: "Средняя", 3: "Высокая", 4: "Наивысшая"}
 IMP = {1: "Низкое", 2: "Среднее", 3: "Высокое", 4: "Наивысшее"}
-SLA_H = {4: 2, 3: 6, 2: 12, 1: 72}  # срок решения по приоритету, часов
+SLA_H = {4: 2, 3: 6, 2: 12, 1: 72}  # срок решения по приоритету, часов (как sla_hours в rules.yaml)
+# Приоритет = влияние × срочность (в данных организаторов пара полностью определяет приоритет)
+IMPACT_URGENCY = {4: (4, 4), 3: (3, 4), 2: (2, 3), 1: (1, 2)}
 
-# продукт → (код, [(сервис, сценарий, команда, тип сервиса)])
+# продукт → (код, [(сервис, сценарий, команда, тип сервиса, [(заголовок, описание), ...])])
 PRODUCTS = {
-    "Мобильный интернет": ("BI_101", [
-        ("[Мобильный интернет] Пакетное ядро", "Передача данных 4G", "КЦ ТБ ДМиМС DC-NET Аварии", "Клиентский"),
-        ("[Мобильный интернет] Радиосеть", "Доступ в сеть", "ОГЭ Приморье", "Клиентский"),
+    "Ковёр-самолёт": ("BI_101", [
+        ("[Ковёр-самолёт] Взлёт и посадка", "Полёт по расписанию", "КЦ Ступа", "Клиентский", [
+            ("Ковёр не взлетает после обновления прошивки", "После ночного обновления ковры-самолёты не отрываются от земли, пассажиры ждут у терема."),
+            ("Ковёр садится не на ту поляну", "Ковры приземляются в соседнем лесу вместо Тридевятого царства, жалобы пассажиров."),
+        ]),
+        ("[Ковёр-самолёт] Бронирование полётов", "Покупка билета", "КЦ Ковёрные мастера", "Клиентский", [
+            ("Не проходит бронирование полёта", "При оплате полёта ковёр уходит в «обработку» и билет не выдаётся."),
+        ]),
     ]),
-    "Мой МТС": ("BI_202", [
-        ("[Мой МТС] Авторизация", "Вход по SMS", "КЦ ИТ Мой МТС", "Клиентский"),
-        ("[Мой МТС] Платежи", "Оплата связи", "КЦ ИТ ЦП Billing Platform", "Клиентский"),
+    "Скатерть-самобранка": ("BI_202", [
+        ("[Скатерть-самобранка] Меню", "Заказ блюд", "КЦ Скатерть L2", "Клиентский", [
+            ("Скатерть накрывает только кашу", "Вместо выбранных блюд скатерть у всех клиентов выдаёт кашу из топора."),
+            ("Пропали пироги из меню", "В меню скатерти исчез раздел «Пироги», клиенты не могут заказать."),
+        ]),
+        ("[Скатерть-самобранка] Доставка", "Доставка к столу", "КЦ Сапоги-скороходы Логистика", "Клиентский", [
+            ("Скатерть не разворачивается у клиентов", "Скатерть приходит свёрнутой и не реагирует на «Развернись!»."),
+        ]),
     ]),
-    "Биллинг": ("BI_303", [
-        ("[Биллинг] Тарификация", "Списание абонплаты", "КЦ ИТ ЦРМП ОРМП Foris Аварии Тарификация", "Клиентский"),
-        ("[Биллинг] Каталог продуктов", "Подключение услуг", "КЦ ИТ EP Product Catalog", "Пользовательский"),
+    "Сапоги-скороходы": ("BI_303", [
+        ("[Сапоги-скороходы] Маршруты", "Построение маршрута", "КЦ Сапоги-скороходы Логистика", "Клиентский", [
+            ("Сапоги бегут не в ту сторону", "Навигация сапог ведёт за тридевять земель вместо соседней деревни."),
+        ]),
+        ("[Сапоги-скороходы] Скорость", "Семимильный шаг", "КЦ Скороходы Ходовая часть", "Технологический", [
+            ("Сапоги шагают на одну милю вместо семи", "Деградация семимильного шага, курьеры опаздывают."),
+        ]),
     ]),
-    "KION": ("BI_404", [
-        ("[KION] Видеоплатформа", "Просмотр фильмов", "КЦ ИТ Media L2 KION", "Клиентский"),
+    "Зеркальце": ("BI_404", [
+        ("[Зеркальце] Сообщения", "Отправка сообщений", "КЦ Зеркальце Мессенджер", "Клиентский", [
+            ("Зеркальце не доставляет сообщения", "Сообщения в Зеркальце висят с одной галочкой, получатели их не видят."),
+        ]),
+        ("[Зеркальце] Видеозвонки", "Звонок «покажи мне»", "КЦ Зеркальце Мессенджер", "Клиентский", [
+            ("Зеркальце показывает не того абонента", "При видеозвонке «Свет мой, зеркальце» показывает чужое лицо."),
+        ]),
+        ("[Зеркальце] Вход", "Вход по волшебному слову", "КЦ Кощеева сеть", "Пользовательский", [
+            ("Не принимается волшебное слово", "Пользователи не могут войти: Зеркальце отвечает «Слово неверное» на верное слово."),
+        ]),
     ]),
-    "Корпоративная сеть": ("BI_505", [
-        ("[Корпоративная сеть] VPN", "Удалённый доступ сотрудников", "КЦ ББ ДИБ УРМС VPN Support", "Пользовательский"),
-        ("[Корпоративная сеть] Каталог пользователей", "Вход в рабочие системы", "КЦ ИТ Active Directory", "Пользовательский"),
+    "Избушка": ("BI_505", [
+        ("[Избушка] Хранилище", "Хранение сундуков", "КЦ Избушка на курьих ножках", "Технологический", [
+            ("Избушка повернулась к лесу передом", "Хранилище недоступно: избушка стоит к клиентам задом и не открывает дверь."),
+            ("Растут задержки сундуков", "Сундуки в облачной избушке открываются с задержкой до минуты."),
+        ]),
+        ("[Избушка] Виртуальные избушки", "Работа виртуальных избушек", "КЦ Избушка на курьих ножках", "Технологический", [
+            ("Виртуальные избушки убежали в лес", "Часть виртуальных избушек кластера перестала отвечать — ушли на курьих ножках."),
+        ]),
     ]),
-    "Инфраструктура ЦОД": ("BI_606", [
-        ("[Инфраструктура ЦОД] Хранилище данных", "Доступ к СХД", "КЦ ДОИ Администрирование SAN", "Технологический"),
-        ("[Инфраструктура ЦОД] Виртуализация", "Работа виртуальных машин", "КЦ ДОИ VMWare", "Технологический"),
+    "Золотая рыбка": ("BI_606", [
+        ("[Золотая рыбка] Исполнение желаний", "Оплата желания", "КЦ Золотая рыбка Платежи", "Клиентский", [
+            ("Желания списываются дважды", "У части клиентов рыбка исполнила желание один раз, а списала два."),
+            ("Рыбка отвечает «Чего тебе надобно» и молчит", "Платёж зависает на шаге подтверждения желания."),
+        ]),
+    ]),
+    "Жар-птица ТВ": ("BI_707", [
+        ("[Жар-птица ТВ] Видеоплатформа", "Просмотр сказок", "КЦ Жар-птица Медиа", "Клиентский", [
+            ("Сказки не запускаются в Жар-птице", "У зрителей бесконечная буферизация, перо крутится и не грузит сказку."),
+        ]),
+    ]),
+    "Кощеева сеть": ("BI_808", [
+        ("[Кощеева сеть] Каталог пользователей", "Вход в рабочие системы", "КЦ Кощеева сеть", "Пользовательский", [
+            ("Сотрудники не могут войти в терем", "Игла в яйце не отвечает: каталог пользователей отвечает с задержкой."),
+        ]),
+        ("[Кощеева сеть] Мосты", "Связь между царствами", "ОГЭ Тридевятое царство", "Технологический", [
+            ("Калинов мост недоступен", "Пропала связь с Тридевятым царством, мониторинг фиксирует обрыв на мосту."),
+        ]),
     ]),
 }
-
-PROBLEMS = {
-    "Пакетное ядро": ("Деградация передачи данных", "Абоненты жалуются на низкую скорость мобильного интернета, рост ошибок сессий на шлюзе."),
-    "Радиосеть": ("Нет сети на базовых станциях", "Мониторинг фиксирует недоступность группы базовых станций, абоненты без связи."),
-    "Авторизация": ("Не приходит SMS-код для входа", "Клиенты не могут войти в приложение Мой МТС: SMS с кодом не доставляется."),
-    "Платежи": ("Ошибка оплаты в приложении", "При оплате связи картой в Мой МТС возвращается ошибка, платежи не проходят."),
-    "Тарификация": ("Двойное списание абонплаты", "Часть абонентов получила повторное списание абонентской платы."),
-    "Каталог продуктов": ("Не подключаются услуги", "Заявки на подключение опций зависают в статусе «в обработке»."),
-    "Видеоплатформа": ("Не запускается видео в KION", "Пользователи видят ошибку воспроизведения, буферизация не завершается."),
-    "VPN": ("Сотрудники не могут подключиться к VPN", "Удалённые сотрудники получают отказ при подключении к корпоративному VPN."),
-    "Каталог пользователей": ("Ошибки входа в рабочие системы", "Сотрудники не могут авторизоваться, контроллер домена отвечает с задержкой."),
-    "Хранилище данных": ("Деградация производительности СХД", "Рост задержек ввода-вывода на массиве, влияние на зависимые сервисы."),
-    "Виртуализация": ("Недоступны виртуальные машины кластера", "Часть виртуальных машин в кластере перестала отвечать."),
-}
-SOLUTIONS = ["Перезапущен сервис, работа восстановлена.", "Откат конфигурации после обновления.",
-             "Переключение на резервный узел.", "Исправлена ошибка маршрутизации.", "Увеличены ресурсы, нагрузка нормализована."]
-PEOPLE = [("Иван Петров", "ipetrov"), ("Анна Смирнова", "asmirnova"), ("Олег Кузнецов", "okuznetsov"),
-          ("Мария Соколова", "msokolova"), ("Дмитрий Орлов", "dorlov"), ("Елена Волкова", "evolkova")]
-COORDS = [("Сергей Лебедев", "slebedev"), ("Ольга Новикова", "onovikova")]
-CHANNELS = ["Мониторинг", "Обращение клиента", "Звонок в контакт-центр"]
+# 6 обращений об одной поломке «Зеркальца»: разные слова, но общее ядро «не доставляются, висит одна галочка» —
+# правила ИИ склеивают их по тексту и без GigaChat (≥50% общих основ слов, в пределах 2 ч)
+MIRROR_DUPLICATES = [
+    ("Зеркальце не доставляет сообщения", "Сообщения не доставляются, висит одна галочка, получатели их не видят."),
+    ("Не уходят сообщения в Зеркальце", "Клиенты пишут: сообщения не доставляются уже полчаса, висит одна галочка."),
+    ("Зеркальце: одна галочка у всех", "Массово сообщения не доставляются получателям, висит одна галочка."),
+    ("Не приходят сообщения от родных", "Сообщения от родных не доставляются, у отправителя висит одна галочка."),
+    ("Зависла отправка в Зеркальце", "Отправка зависает: сообщения не доставляются, висит одна галочка, потом ошибка."),
+    ("Зеркальце молчит", "В чатах сообщения не доставляются, висит одна галочка; звонки при этом работают."),
+]
+BG_GAP_MIN = 130  # фоновые активные одного сервиса — не чаще раза в 2 ч (иначе ИИ честно видит дубли и всплески)
+SOLUTIONS = ["Перезапущена волшебная палочка, работа восстановлена.", "Откат заклинания после обновления.",
+             "Переключение на резервную ступу.", "Исправлена ошибка в путеводном клубочке.",
+             "Добавлено волшебной силы, нагрузка нормализована.", "Избушку развернули к лесу задом, к клиентам передом."]
+PEOPLE = [("Баба Яга", "babayaga"), ("Кощей Бессмертный", "koschei"), ("Иван-царевич", "ivan"),
+          ("Василиса Премудрая", "vasilisa"), ("Елена Прекрасная", "elena"), ("Емеля", "emelya"),
+          ("Конёк-Горбунок", "konek"), ("Змей Горыныч", "gorynych"), ("Илья Муромец", "muromets"),
+          ("Добрыня Никитич", "dobrynya"), ("Алёша Попович", "alesha"), ("Царевна-лягушка", "frog"),
+          ("Кот Баюн", "bayun"), ("Серый Волк", "wolf"), ("Марья-искусница", "marya"), ("Финист Ясный Сокол", "finist")]
+INITIATORS = [("Мельник", "melnik"), ("Старик со старухой", "starik"), ("Колобок", "kolobok"), ("Леший", "leshiy"),
+              ("Водяной", "vodyanoy"), ("Царь Горох", "goroh"), ("Красная Шапочка", "shapka"), ("Курочка Ряба", "ryaba")]
+COORD_STAFF = [("Мудрый Ворон", "voron"), ("Сова Совушка", "sova")]
+CHANNELS = ["Мониторинг", "Обращение клиента", "Звонок в контакт-центр", "Сорока на хвосте принесла"]
 
 
 def fmt(dt: datetime | None) -> str | None:
@@ -84,104 +143,184 @@ class Gen:
         self.rnd = random.Random(seed)
         self.n = 30000100
         self.items: list[dict] = []
+        self.services = [(p, i) for p, (_, svcs) in PRODUCTS.items() for i in range(len(svcs))]
+        self.busy: dict[tuple[str, int], list[float]] = {}  # сервис → «сколько минут назад» созданы активные
 
     def add(self, product: str, svc_i: int, *, state: int, prio: int, ago_min: float, team: str | None = None,
             resolve_after_min: float | None = None, deadline_min: float | None = None, inc_id: str | None = None,
-            urgency: int | None = None, impact: int | None = None, master=False, double=False, assignee=None,
-            header: str | None = None) -> dict:
+            master=False, double=False, assignee=None, header: str | None = None, descr: str | None = None,
+            assigned_ago_min: float | None = None, work_log: list | None = None, no_deadline=False,
+            stype: str | None = None) -> dict:
         code, services = PRODUCTS[product]
-        service, scenario, own_team, stype = services[svc_i]
-        key = service.split("] ")[1]
-        title, descr = PROBLEMS[key]
-        self.n += self.rnd.randint(3, 40)
+        service, scenario, own_team, own_stype, problems = services[svc_i]
+        title, text = self.rnd.choice(problems)
+        stype = stype or own_stype
+        if inc_id is None:
+            self.n += 1
+            inc_id = f"INC0000{self.n}"
         submit = self.now - timedelta(minutes=ago_min)
-        deadline = submit + timedelta(hours=SLA_H[prio]) if deadline_min is None else self.now + timedelta(minutes=deadline_min)
+        if no_deadline:
+            deadline = None
+        else:
+            deadline = submit + timedelta(hours=SLA_H[prio]) if deadline_min is None else self.now + timedelta(minutes=deadline_min)
         completion = submit + timedelta(minutes=resolve_after_min) if resolve_after_min is not None else None
-        if completion and completion > self.now - timedelta(minutes=10):
-            completion = self.now - timedelta(minutes=self.rnd.uniform(10, 60))  # решение не может быть в будущем
+        if completion and completion > self.now - timedelta(minutes=5):
+            completion = self.now - timedelta(minutes=self.rnd.uniform(5, 60))  # решение не может быть в будущем
         team = team or own_team
-        person = assignee or (self.rnd.choice(COORDS) if team == COORD else self.rnd.choice(PEOPLE))
-        init = self.rnd.choice(PEOPLE)
+        person = assignee or (self.rnd.choice(COORD_STAFF) if team == COORD else self.rnd.choice(PEOPLE))
+        init = self.rnd.choice(INITIATORS)
+        imp, urg = IMPACT_URGENCY[prio]
+        assigned = self.now - timedelta(minutes=assigned_ago_min) if assigned_ago_min is not None \
+            else submit + timedelta(minutes=min(5.0, ago_min))
+        done = state in (7, 10, 20)
+        n = int(inc_id[-9:]) if inc_id[-9:].isdigit() else self.n
         rec = {
-            "sysId": str(179400000000000000 + self.n),
-            "id": inc_id or f"INC0000{self.n}",
+            "sysId": str(179400000000000000 + n),
+            "id": inc_id,
             "state": STATES[state][0], "stateEnum": STATES[state][1], "stateId": state,
-            "stateReason": "Постоянное решение" if state in (7, 10, 20) else "Нет",
-            "stateReasonId": "430" if state in (7, 10, 20) else "1",
+            "stateReason": "Постоянное решение" if done else "Нет",
+            "stateReasonId": "430" if done else "1",
             "submitDate": fmt(submit), "deadline": fmt(deadline), "completionDate": fmt(completion),
-            "lastAssignmentToTeamDateTime": fmt(submit + timedelta(minutes=min(5, ago_min))),
-            "header": header or title, "description": descr,
-            "shortDescription": descr.split(",")[0].split(":")[0] + ".",
+            "lastAssignmentToTeamDateTime": fmt(assigned),
+            "header": header or title, "description": descr or text,
+            "shortDescription": (descr or text).split(",")[0].split(":")[0].rstrip(".") + ".",
             "assignedGroupName": team,
-            "assignedEmployee": f"{person[0]} ({person[1]})", "assignedEmployeeLogin": person[1],
+            "assignedEmployee": f"{person[0]} ({person[1]})" if person else None,
+            "assignedEmployeeLogin": person[1] if person else None,
             "initiatorName": f"{init[0]} ({init[1]})", "initiatorLogin": init[1],
             "isEffect": False, "isReason": double, "isDouble": double, "isMaster": master,
             "incType": "МИ",
             "serviceTypeId": {"Клиентский": 10, "Пользовательский": 20, "Технологический": 30}[stype], "serviceType": stype,
             "priorityId": prio, "priority": PRIO[prio],
-            "urgencyId": urgency or min(4, prio + 1), "urgency": URG[urgency or min(4, prio + 1)],
-            "impactId": impact or prio, "impact": IMP[impact or prio],
+            "urgencyId": urg, "urgency": URG[urg], "impactId": imp, "impact": IMP[imp],
             "waitingExitDate": "0001-01-01T00:00:00", "isRootIncident": not double,
             "productName": product, "productId": str(174000000000000000 + int(code[3:])), "productMasterId": code,
             "productUrl": None, "service": service, "serviceId": str(174100000000000000 + int(code[3:]) * 10 + svc_i),
-            "scenarioName": scenario, "isNeedUp": False if state in (7, 10, 20) else None,
+            "scenarioName": scenario, "isNeedUp": False if done else None,
             "eliminationType": None, "eliminationTypeId": None,
             "receivingChannel": self.rnd.choice(CHANNELS),
             # solution только у решённых (как просили менторы)
-            "solution": self.rnd.choice(SOLUTIONS) if state in (7, 10, 20) else None,
+            "solution": self.rnd.choice(SOLUTIONS) if done else None,
         }
+        if work_log:
+            rec["workLog"] = work_log
+        if state in (0, 2):
+            self.busy.setdefault((product, svc_i), []).append(ago_min)
         self.items.append(rec)
         return rec
 
+    def random_service(self) -> tuple[str, int]:
+        return self.rnd.choice(self.services)
 
-def build(now: datetime) -> list[dict]:
-    g = Gen(now)
+    def free_slots(self, n: int) -> list[tuple[float, str, int]]:
+        """n моментов для фоновых активных: в одном сервисе не чаще BG_GAP_MIN и не ближе 2 ч к героям демо.
+        → [(минут назад, продукт, сервис)], от свежих к старым."""
+        slots: list[tuple[float, str, int]] = []
+        k = 0
+        while len(slots) < n:
+            for si, (p, s) in enumerate(self.services):
+                ago = 10 + si * 7 + k * BG_GAP_MIN + self.rnd.uniform(0, 5)
+                if all(abs(ago - b) >= BG_GAP_MIN for b in self.busy.get((p, s), ())):
+                    slots.append((ago, p, s))
+            k += 1
+        slots.sort()
+        return slots[:n]
+
+
+def _prio_log(now: datetime, steps: list[tuple[float, int, int]], author="Мудрый Ворон") -> list[dict]:
+    """Записи журнала о прошлых повышениях приоритета (наш формат workLog: kind/before/after)."""
+    out = []
+    for ago, a, b in steps:
+        out.append({"at": fmt(now - timedelta(minutes=ago)), "author": author, "action": "priority",
+                    "text": f"приоритет: {PRIO[a]} → {PRIO[b]}", "kind": "priority", "before": PRIO[a], "after": PRIO[b],
+                    "before_id": a, "after_id": b, "up": b > a})
+    return out
+
+
+def build(now: datetime, count: int = 5000, seed: int = 7) -> list[dict]:
+    g = Gen(now, seed)
     r = g.rnd
-    # 1) История за неделю: по 2–4 решённых на каждый сервис своей командой (для подсказок и прогноза)
-    for product, (_, services) in PRODUCTS.items():
-        for i in range(len(services)):
-            for _ in range(r.randint(2, 4)):
-                prio = r.choice([2, 2, 3, 3, 4, 1])
-                ago = r.uniform(24 * 60, 7 * 24 * 60)
-                g.add(product, i, state=r.choice([7, 10, 10]), prio=prio, ago_min=ago,
-                      resolve_after_min=SLA_H[prio] * 60 * r.uniform(0.25, 1.1))
 
-    # 2) Активные — герои демо (фиксированные номера, их трогает scripts/demo.py)
-    g.add("Мобильный интернет", 0, state=2, prio=4, ago_min=35, deadline_min=50, inc_id="INC000030000001",
-          urgency=4, impact=4, master=True)                                      # критический в работе
-    g.add("Мой МТС", 0, state=0, prio=4, ago_min=12, deadline_min=95, inc_id="INC000030000002",
-          team=COORD, urgency=4, impact=4)                                       # критический И на координаторах
-    g.add("Биллинг", 0, state=2, prio=3, ago_min=200, deadline_min=40, inc_id="INC000030000003",
-          urgency=4, impact=3)                                                   # высокий, срок горит → станет критическим
-    g.add("KION", 0, state=0, prio=2, ago_min=25, inc_id="INC000030000004", team=COORD)  # на координаторах → передать
-    g.add("Корпоративная сеть", 0, state=20, prio=3, ago_min=300, resolve_after_min=180,
-          inc_id="INC000030000005", deadline_min=None)                           # исследование → назначат на координаторов
-    g.add("Мой МТС", 1, state=2, prio=2, ago_min=90, inc_id="INC000030000006")  # средний → решат / переназначат
+    # ---------- 1) Герои демо (постоянные номера) ----------
+    g.add("Ковёр-самолёт", 0, state=2, prio=4, ago_min=35, deadline_min=50, inc_id="INC000030000001", master=True,
+          header="Ковёр не взлетает после обновления прошивки")                         # критический в работе
+    g.add("Золотая рыбка", 0, state=0, prio=4, ago_min=12, deadline_min=95, inc_id="INC000030000002", team=COORD,
+          assigned_ago_min=6, header="Желания списываются дважды")                       # критический И на координаторах
+    g.add("Скатерть-самобранка", 0, state=2, prio=3, ago_min=320, deadline_min=40, inc_id="INC000030000003",
+          header="Скатерть накрывает только кашу")                                       # высокий, срок горит → кандидат
+    g.items[-1].update(impactId=4, impact=IMP[4])                                        # влияние наивысшее — риск выше
+    g.add("Жар-птица ТВ", 0, state=0, prio=2, ago_min=25, inc_id="INC000030000004", team=COORD, assigned_ago_min=18)
+    g.add("Кощеева сеть", 0, state=20, prio=3, ago_min=300, resolve_after_min=180, inc_id="INC000030000005", no_deadline=True)
+    g.add("Сапоги-скороходы", 0, state=2, prio=2, ago_min=90, inc_id="INC000030000006")
+    g.add("Избушка", 0, state=2, prio=3, ago_min=80, inc_id="INC000030000007", deadline_min=200,
+          header="Избушка повернулась к лесу передом",
+          work_log=_prio_log(now, [(70, 1, 2), (25, 2, 3)]))                             # нарастает: Низкий → Средний → Высокий
+    # 6 дублей «Зеркальца»: одна поломка, разные обращения за последние 1,5 часа
+    for k, (ago, (title, text)) in enumerate(zip((84, 61, 47, 33, 20, 9), MIRROR_DUPLICATES)):
+        g.add("Зеркальце", 0, state=0 if k % 2 else 2, prio=3 if k == 0 else 2, ago_min=ago,
+              inc_id=f"INC0000300000{11 + k}", header=title, descr=text)
+    # Ещё на координаторах: разное время ожидания (порядок колонки — дольше ждёт выше)
+    for svc, wait, prio, state in ((("Ковёр-самолёт", 1), 41, 2, 0), (("Избушка", 1), 27, 3, 2), (("Зеркальце", 2), 14, 2, 0),
+                                   (("Скатерть-самобранка", 1), 8, 1, 0), (("Кощеева сеть", 1), 3, 3, 0)):
+        g.add(svc[0], svc[1], state=state, prio=prio, ago_min=wait + r.uniform(5, 60), team=COORD, assigned_ago_min=wait)
 
-    # 3) Всплеск: мастер + дубли по пакетному ядру за последние 30 минут
-    for ago in (28, 19, 11):
-        g.add("Мобильный интернет", 0, state=0, prio=2, ago_min=ago, double=True)
+    # ---------- 2) Фон: активные (~10%), по сервису не чаще раза в 2 ч ----------
+    active = int(count * 0.10)
+    research = max(10, count // 200)
+    # высокие (в группе «Высокий приоритет») — самые свежие слоты; средние и низкие — вне групп
+    # (поиск и «ещё N вне групп»); пара критических, чтобы колонка не была пустой без демо-шагов
+    n_high = max(8, count // 120)
+    slots = g.free_slots(active)
+    young = slots[:n_high + 2]
+    crit_at = {young[1], young[5 % len(young)]}
+    for i, slot in enumerate(slots):
+        ago, p, s = slot
+        if slot in crit_at:
+            prio = 4
+        elif i < n_high + 2:
+            prio = 3
+        elif ago < 13 * 60:
+            prio = r.choice([2, 2, 2, 1])
+        else:
+            prio = r.choice([1, 1, 2])
+        rec = g.add(p, s, state=r.choice([0, 2, 2]), prio=prio, ago_min=ago, no_deadline=(r.random() < 0.02))
+        if rec["stateId"] == 0 and r.random() < 0.3:  # назначен на команду, сотрудник ещё не выбран
+            rec["assignedEmployee"] = rec["assignedEmployeeLogin"] = None
+    for _ in range(research):
+        p, s = g.random_service()
+        prio = r.choice([2, 3, 3, 4])
+        ago = r.uniform(120, 3 * 24 * 60)
+        g.add(p, s, state=20, prio=prio, ago_min=ago, resolve_after_min=SLA_H[prio] * 60 * r.uniform(0.3, 0.9))
 
-    # 4) Фон: высокий, средние, низкие, исследование
-    g.add("Инфраструктура ЦОД", 0, state=2, prio=3, ago_min=150, urgency=3, impact=3)
-    g.add("Корпоративная сеть", 1, state=0, prio=3, ago_min=70)
-    g.add("Биллинг", 1, state=2, prio=2, ago_min=400)
-    g.add("Инфраструктура ЦОД", 1, state=0, prio=1, ago_min=600)
-    g.add("KION", 0, state=20, prio=2, ago_min=900, resolve_after_min=240)
-    g.add("Мобильный интернет", 1, state=20, prio=3, ago_min=1300, resolve_after_min=200, team=COORD)
-    g.add("Мой МТС", 0, state=7, prio=3, ago_min=140, resolve_after_min=110)     # недавно решён (может вернуться)
-    return g.items
+    # ---------- 3) История за 30 дней: решённые/закрытые своей командой ----------
+    while len(g.items) < count:
+        p, s = g.random_service()
+        prio = r.choice([1, 2, 2, 2, 3, 3, 4])
+        ago = r.uniform(3 * 60, 30 * 24 * 60)
+        team = None
+        if r.random() < 0.12:  # иногда решала соседняя команда — подсказка «кому передать» не однозначна
+            team = r.choice([sv[2] for _, (_, svcs) in PRODUCTS.items() for sv in svcs])
+        g.add(p, s, state=r.choice([7, 10, 10, 10]), prio=prio, ago_min=ago, team=team,
+              resolve_after_min=SLA_H[prio] * 60 * r.uniform(0.2, 1.15))
+    return g.items[:count]
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> Path:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--count", type=int, default=5000)
+    ap.add_argument("--out", type=Path, default=OUT)
+    ap.add_argument("--use", action="store_true", help="сделать рабочим data/incidents.json")
+    args = ap.parse_args(argv if argv is not None else sys.argv[1:])
     now = datetime.now(timezone.utc).replace(microsecond=0)
-    items = build(now)
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"{OUT.relative_to(ROOT)}: {len(items)} инцидентов, «сейчас» = {now.isoformat()}")
-    if "--use" in sys.argv:
-        (ROOT / "data" / "incidents.json").write_text(OUT.read_text(encoding="utf-8"), encoding="utf-8")
+    items = build(now, args.count)
+    out = args.out if args.out.is_absolute() else ROOT / args.out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"{out}: {len(items)} инцидентов, «сейчас» = {now.isoformat()} (смотреть с TIME_MODE=real)")
+    if args.use:
+        (ROOT / "data" / "incidents.json").write_text(out.read_text(encoding="utf-8"), encoding="utf-8")
         print("→ data/incidents.json")
+    return out
 
 
 if __name__ == "__main__":

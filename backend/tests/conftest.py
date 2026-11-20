@@ -62,6 +62,7 @@ def make_store(tmp_path, rules):
         write(f, records)
         s = Settings()
         s.incidents_file = f
+        s.coalesce_seconds = 0  # тесты пишут файл и сразу опрашивают — склейку правок отключаем
         store = Store(s, rules, clock or FakeClock())
         store.poll()
         return store, f

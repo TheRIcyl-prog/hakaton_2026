@@ -60,7 +60,7 @@ def test_bad_records_skipped_duplicates_last_wins(rules):
     data = [make("A", priority_id=1), "строка", {"нет": "id"}, make("A", priority_id=3)]
     incs, warnings = adapt_all(data, rules, TPL)
     assert list(incs) == ["A"] and incs["A"]["priority_id"] == 3
-    assert len(warnings) == 3
+    assert len(warnings) == 4 and warnings[0] == "пропущено записей без id: 2"  # сводка + 2 записи + повтор id
 
 
 def test_coord_constant_matches_rules(rules):

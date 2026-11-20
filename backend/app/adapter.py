@@ -7,18 +7,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+from functools import lru_cache
 from datetime import datetime, timezone
 from typing import Any
 
 from .config import Rules
 
 ZERO_DATE_PREFIX = "0001-01-01"
+# Структурные поля записи журнала (было → стало), формат history.py
+WORK_LOG_EXTRA = ("kind", "before", "after", "before_id", "after_id", "up", "later", "shift_min")
 
 
 def parse_dt(value: Any) -> datetime | None:
     """ISO с Z / микросекундами / без зоны, а также 'YYYY-MM-DD HH:MM:SS'. Всё приводим к UTC."""
     if not value or not isinstance(value, str):
         return None
+    return _parse_dt_str(value)
+
+
+@lru_cache(maxsize=200_000)  # одни и те же строки дат разбираются на каждой правке — кэшируем (datetime неизменяем)
+def _parse_dt_str(value: str) -> datetime | None:
     s = value.strip()
     if not s or s.startswith(ZERO_DATE_PREFIX):
         return None
@@ -118,13 +126,29 @@ def _work_log(value: Any) -> list[dict]:
     out = []
     for e in value[-30:]:
         if isinstance(e, dict):
-            out.append({
+            entry = {
                 "at": iso(parse_dt(e.get("at"))),
                 "author": to_str(e.get("author")),
                 "action": to_str(e.get("action")),
                 "text": to_str(e.get("text")),
-            })
+            }
+            # Структурная часть (было → стало) — её пишет itsm.py; нужна истории изменений (ИИ, п. 8.5)
+            if e.get("kind"):
+                for k in WORK_LOG_EXTRA:
+                    if e.get(k) is not None:
+                        entry[k] = e.get(k)
+            out.append(entry)
     return out
+
+
+def _coordinator(value: Any) -> dict | None:
+    """Наше поле «координатор»: кто из координаторов взял инцидент в работу (decisions.md, п. 7)."""
+    if not isinstance(value, dict):
+        return None
+    name = to_str(value.get("name"))
+    if not name:
+        return None
+    return {"name": name, "at": iso(parse_dt(value.get("at")))}
 
 
 def adapt_one(raw: dict, rules: Rules, itsm_template: str) -> dict | None:
@@ -188,30 +212,50 @@ def adapt_one(raw: dict, rules: Rules, itsm_template: str) -> dict | None:
         "itsm_url": itsm_url,
         # Журнал работ — наше поле (менторы разрешили добавлять поля). Пишет его itsm.py.
         "work_log": _work_log(raw.get("workLog")),
+        # «Взять в работу» — наше поле coordinator: {name, at}. Пишет его itsm.py.
+        "coordinator": _coordinator(raw.get("coordinator")),
         "hash": content_hash(raw),
     }
 
 
-def adapt_all(data: Any, rules: Rules, itsm_template: str) -> tuple[dict[str, dict], list[str]]:
-    """Возвращает {id: incident} и список предупреждений. Повтор id — побеждает последний."""
-    warnings: list[str] = []
+def unwrap(data: Any) -> list:
+    """Массив инцидентов (на случай обёртки {"items": [...]} / {"incidents": [...]})."""
     if isinstance(data, dict):
-        # на случай обёртки {"items": [...]} / {"incidents": [...]}
         for key in ("incidents", "items", "data", "result"):
             if isinstance(data.get(key), list):
-                data = data[key]
-                break
+                return data[key]
     if not isinstance(data, list):
         raise ValueError("ожидается JSON-массив инцидентов")
+    return data
+
+
+def adapt_all(data: Any, rules: Rules, itsm_template: str,
+              prev: dict[str, tuple[dict, dict]] | None = None) -> tuple[dict[str, dict], list[str]]:
+    """Возвращает {id: incident} и список предупреждений. Повтор id — побеждает последний.
+
+    prev = {id: (сырая запись, incident)} с прошлого чтения: если запись не изменилась (сравнение dict в C —
+    0,01 с на 10 000), берём готовый incident без разбора и без пересчёта hash."""
+    warnings: list[str] = []
+    data = unwrap(data)
+    prev = prev or {}
+    skipped = 0
     out: dict[str, dict] = {}
     for i, raw in enumerate(data):
-        inc = adapt_one(raw, rules, itsm_template)
+        old = prev.get(raw.get("id")) if isinstance(raw, dict) and isinstance(raw.get("id"), str) else None
+        if old is not None and old[0] == raw:
+            inc = old[1]
+        else:
+            inc = adapt_one(raw, rules, itsm_template)
         if inc is None:
-            warnings.append(f"запись #{i}: нет id или не объект — пропущена")
+            skipped += 1
+            if skipped <= 10:
+                warnings.append(f"запись #{i}: нет id или не объект — пропущена")
             continue
         if inc["id"] in out:
             warnings.append(f"повтор id {inc['id']} — взята последняя запись")
         out[inc["id"]] = inc
+    if skipped:
+        warnings.insert(0, f"пропущено записей без id: {skipped}")
     return out, warnings
 
 

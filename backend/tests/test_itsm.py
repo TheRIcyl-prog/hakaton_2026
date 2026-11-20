@@ -117,34 +117,131 @@ def test_import_validates_and_backs_up(env, tmp_path):
     assert set(store.incidents) == {"X", "Y"}
 
 
-# ---------- общие тревоги ----------
-def test_alerts_ack_shared_and_rearm(make_store):
-    store, f = make_store([make("K", 0, 4), make("C", 0, 2, COORD)])
-    keys = {a["key"]: a for a in store.snapshot()["alerts"]}
-    assert set(keys) == {"critical:K", "coordinators:C"}
+# ---------- «Взять в работу» в файле, тревоги, конфликты (decisions.md, п. 4, 7) ----------
+@pytest.fixture
+def linked(make_store, rules, tmp_path):
+    """Store + Itsm, связанные как в main.py: запись применяется в памяти без перечитывания."""
+    def _linked(records):
+        store, f = make_store(records)
+        return store, Itsm(f, rules, lambda: NOW, store=store, backup_dir=tmp_path / "backups", backups_keep=20), f
+
+    return _linked
+
+
+def alert(store, key):
+    return next(a for a in store.snapshot()["alerts"] if a["key"] == key)
+
+
+def test_take_writes_file_and_clears_alert_for_everyone(linked):
+    store, itsm, f = linked([make("K", 0, 4), make("C", 0, 2, COORD)])
+    assert {a["key"] for a in store.snapshot()["alerts"]} == {"critical:K", "coordinators:C"}
     assert store.snapshot()["alerts"][0]["group"] == "critical"  # критические первыми
-    assert store.ack("critical:K", "Ольга")
-    a = next(x for x in store.snapshot()["alerts"] if x["key"] == "critical:K")
-    assert a["acked_by"] == "Ольга"
-    # понизили и снова подняли до критического — новый эпизод, «Принял» сброшен
-    write(f, [make("K", 0, 3), make("C", 0, 2, COORD)])
-    store.poll()
-    write(f, [make("K", 0, 4), make("C", 0, 2, COORD)])
-    store.poll()
-    a = next(x for x in store.snapshot()["alerts"] if x["key"] == "critical:K")
-    assert a["acked_by"] is None
+    v = store.version
+    itsm.take("K", "Ольга")
+    assert raw(f, "K")["coordinator"] == {"name": "Ольга", "at": "2026-11-10T12:00:00Z"}
+    assert raw(f, "K")["workLog"][-1]["action"] == "take"
+    # применено в памяти сразу, без опроса файла
+    assert store.version > v and store.incidents["K"]["coordinator"]["name"] == "Ольга"
+    a = alert(store, "critical:K")
+    assert a["taken_by"] == "Ольга" and a["acked_by"] == "Ольга"  # acked_by — для старого фронта
+    assert store.snapshot()["claims"]["K"]["by"] == "Ольга"
+    assert "taken" in types(store)
+    assert not store.poll()  # свой файл повторно не разбираем
 
 
-def test_claim_cleared_when_incident_leaves_groups(make_store):
-    store, f = make_store([make("C", 0, 2, COORD)])
-    store.claim("C", "Ольга")
-    assert store.snapshot()["claims"]["C"]["by"] == "Ольга"
-    write(f, [make("C", 0, 2, "КЦ ДОИ VMWare")])  # передали в команду
+def test_take_conflicts_and_release_rearms_alert(linked):
+    store, itsm, f = linked([make("K", 0, 4)])
+    itsm.take("K", "Ольга")
+    with pytest.raises(ItsmError, match="уже в работе у Ольга") as e:
+        itsm.take("K", "Сергей")
+    assert e.value.status == 409
+    itsm.take("K", "Сергей", force=True)
+    assert raw(f, "K")["coordinator"]["name"] == "Сергей"
+    itsm.release("K", "Сергей")
+    assert "coordinator" not in raw(f, "K")
+    assert alert(store, "critical:K")["taken_by"] is None  # отпустили, а он всё ещё критический — тревога снова
+    assert "released" in types(store)
+
+
+def test_alert_new_episode_after_leaving_group(make_store):
+    store, f = make_store([make("K", 0, 4)])
+    since = alert(store, "critical:K")["since"]
+    write(f, [make("K", 0, 3)])
     store.poll()
+    assert not store.snapshot()["alerts"]
+    write(f, [make("K", 0, 4)])
+    store.poll()
+    assert alert(store, "critical:K")["taken_by"] is None and alert(store, "critical:K")["since"] >= since
+
+
+def test_assign_clears_coordinator(linked):
+    store, itsm, f = linked([make("C", 0, 2, COORD)])
+    itsm.take("C", "Ольга")
+    itsm.assign("C", "КЦ ДОИ VMWare", "Ольга")
+    r = raw(f, "C")
+    assert "coordinator" not in r and "снят с координатора Ольга" in r["workLog"][-1]["text"]
     assert "C" not in store.snapshot()["claims"]
+
+
+def test_conflict_when_incident_changed_meanwhile(linked):
+    store, itsm, f = linked([make("A", 2, 3)])
+    seen = store.incidents["A"]["hash"]               # координатор открыл панель
+    write(f, [make("A", 2, 4, deadline="2026-11-10T13:00:00Z")])  # а жюри поменяло файл
+    store.poll()
+    before = f.read_text(encoding="utf-8")
+    with pytest.raises(ItsmError) as e:
+        itsm.set_priority("A", 2, "Ольга", expected_hash=seen)
+    assert e.value.status == 409 and e.value.detail["conflict"]
+    fields = {c["field"] for c in e.value.detail["changes"]}
+    assert {"priority", "deadline"} <= fields
+    assert f.read_text(encoding="utf-8") == before   # ничего не перезаписали
+    itsm.set_priority("A", 2, "Ольга", expected_hash=store.incidents["A"]["hash"])  # с актуальной версией — можно
+    assert raw(f, "A")["priorityId"] == 2
+
+
+def test_backup_before_each_write_keeps_20(linked, tmp_path):
+    store, itsm, f = linked([make("A", 2, 3)])
+    for i in range(23):
+        itsm.comment("A", f"комментарий {i}", "Ольга")
+    backups = list((tmp_path / "backups").iterdir())
+    assert len(backups) == 20
+    assert len(store.incidents["A"]["work_log"]) == 23 or len(store.incidents["A"]["work_log"]) == 30
+
+
+def test_history_records_changes_with_author(linked):
+    store, itsm, f = linked([make("A", 2, 2)])
+    itsm.set_priority("A", 3, "Ольга")
+    write(f, [{**raw(f, "A"), "priorityId": 4, "priority": "Наивысший"}])  # жюри подняло ещё раз
+    store.poll()
+    h = store.history.get("A")
+    assert [(c["kind"], c["before"], c["after"], c["by"]) for c in h] == [
+        ("priority", "Средний", "Высокий", "Ольга"), ("priority", "Высокий", "Наивысший", None)]
+    assert all(c["up"] for c in h)
+    assert store.incident("A")["history"] == h
+
+
+def test_history_seeded_from_work_log(make_store):
+    log = [{"at": "2026-11-10T11:00:00Z", "author": "Жюри", "action": "priority", "text": "x",
+            "kind": "priority", "before": "Низкий", "after": "Средний", "before_id": 1, "after_id": 2, "up": True}]
+    store, _ = make_store([make("A", 2, 2, workLog=log)])
+    h = store.history.get("A")
+    assert len(h) == 1 and h[0]["kind"] == "priority" and h[0]["by"] == "Жюри" and h[0]["up"]
 
 
 def test_teams_list(make_store):
     store, _ = make_store([make("A", team="КЦ ДОИ VMWare"), make("B", team="AutoClosedMi")])
     teams = store.snapshot()["teams"]
     assert "КЦ ДОИ VMWare" in teams and COORD in teams and "AutoClosedMi" not in teams
+
+
+def test_confirm_duplicates_one_write(linked, tmp_path):
+    store, itsm, f = linked([make("M", 0, 2), make("D1", 0, 2), make("D2", 2, 2), make("X", 0, 2)])
+    itsm.confirm_duplicates("M", ["M", "D1", "D2"], "Ольга")
+    assert raw(f, "M")["isMaster"] is True and raw(f, "M")["isDouble"] is False
+    assert raw(f, "D1")["isDouble"] is True and raw(f, "D2")["isMaster"] is False
+    assert "D1" in raw(f, "M")["workLog"][-1]["text"] and raw(f, "D1")["workLog"][-1]["action"] == "duplicates"
+    assert "isDouble" not in raw(f, "X")
+    assert store.incidents["D2"]["is_double"] and store.incidents["M"]["is_master"]  # применено в памяти
+    assert len(list((tmp_path / "backups").iterdir())) == 1                          # одна запись — одна копия
+    with pytest.raises(ItsmError):
+        itsm.confirm_duplicates("M", ["NOPE"], "Ольга")

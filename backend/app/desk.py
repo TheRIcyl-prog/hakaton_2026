@@ -1,8 +1,10 @@
-"""Общее состояние смены: тревоги с подтверждением и «кто взял в работу».
+"""Общее состояние смены: эпизоды тревог и список координаторов, выходивших на смену.
 
-Это не свойства инцидента, а состояние работы координаторов, поэтому живёт не в файле
-инцидентов, а в cache/desk_state.json. Общее для видеостены и всех АРМ: координатор нажал
-«Принял» у себя — баннер пропадает и на стене.
+С 20.11 (decisions.md, п. 4 и 7) кнопки «Принял» нет: тревогу снимает «Взять в работу», а оно
+пишется в файл инцидентов полем coordinator (itsm.py). Здесь остаются только эпизоды тревог:
+когда инцидент вошёл в «критические»/«на координаторах» (since), — это не свойство инцидента,
+поэтому живёт в cache/desk_state.json. Тревога «не взята», пока у инцидента нет координатора;
+отпустили, а инцидент всё ещё в группе, — тревога снова не взята.
 """
 from __future__ import annotations
 
@@ -23,8 +25,7 @@ class DeskState:
         self.path = path
         self.now_fn = _real_now  # Store подставляет часы дашборда, чтобы время совпадало с экраном
         self.lock = threading.Lock()
-        self.alerts: dict[str, dict] = {}   # "group:id" -> {group, incident_id, since, acked_by, acked_at}
-        self.claims: dict[str, dict] = {}   # id -> {by, at}
+        self.alerts: dict[str, dict] = {}   # "group:id" -> {key, group, incident_id, since}
         self.coordinators: list[str] = []   # кто выходил на смену (для подсказки имени)
         self._load()
 
@@ -36,8 +37,8 @@ class DeskState:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
-        self.alerts = data.get("alerts", {})
-        self.claims = data.get("claims", {})
+        self.alerts = {k: {"key": k, "group": a.get("group"), "incident_id": a.get("incident_id"), "since": a.get("since")}
+                       for k, a in (data.get("alerts") or {}).items() if isinstance(a, dict)}
         self.coordinators = data.get("coordinators", [])
 
     def _save(self) -> None:
@@ -46,7 +47,7 @@ class DeskState:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"alerts": self.alerts, "claims": self.claims, "coordinators": self.coordinators},
+            tmp.write_text(json.dumps({"alerts": self.alerts, "coordinators": self.coordinators},
                                       ensure_ascii=False, indent=1), encoding="utf-8")
             tmp.replace(self.path)
         except OSError:
@@ -55,11 +56,14 @@ class DeskState:
     # ---------- тревоги ----------
     def sync_alerts(self, incidents: dict[str, dict]) -> bool:
         """Эпизод тревоги начинается, когда инцидент входит в группу, и кончается, когда выходит.
-        Повторный вход = новый эпизод, «Принял» сбрасывается. True — если что-то изменилось."""
+        Повторный вход = новый эпизод. True — если что-то изменилось."""
         active: set[str] = set()
         for inc in incidents.values():
+            groups = inc.get("groups")
+            if not groups:
+                continue
             for g in ALERT_GROUPS:
-                if g in inc.get("groups", []) and g not in inc.get("resolved_in", []):
+                if g in groups and g not in inc.get("resolved_in", ()):
                     active.add(f"{g}:{inc['id']}")
         changed = False
         with self.lock:
@@ -69,55 +73,33 @@ class DeskState:
                     changed = True
             for key in active - set(self.alerts):
                 group, inc_id = key.split(":", 1)
-                self.alerts[key] = {"key": key, "group": group, "incident_id": inc_id, "since": self._now_iso(),
-                                    "acked_by": None, "acked_at": None}
+                self.alerts[key] = {"key": key, "group": group, "incident_id": inc_id, "since": self._now_iso()}
                 changed = True
-            # «В работе у …» снимаем, когда инцидент ушёл из всех групп (решён/передан и т.п.)
-            for inc_id in list(self.claims):
-                inc = incidents.get(inc_id)
-                if not inc or not [g for g in inc.get("groups", []) if g not in inc.get("resolved_in", [])]:
-                    del self.claims[inc_id]
-                    changed = True
             if changed:
                 self._save()
         return changed
 
-    def ack(self, key: str, by: str) -> bool:
+    def remember(self, name: str) -> None:
+        """Координатор что-то сделал — запомним имя для подсказки на других АРМ."""
         with self.lock:
-            a = self.alerts.get(key)
-            if not a:
-                return False
-            a["acked_by"], a["acked_at"] = by, self._now_iso()
-            self._remember(by)
-            self._save()
-            return True
-
-    # ---------- в работе ----------
-    def claim(self, inc_id: str, by: str) -> None:
-        with self.lock:
-            self.claims[inc_id] = {"by": by, "at": self._now_iso()}
-            self._remember(by)
-            self._save()
-
-    def release(self, inc_id: str) -> bool:
-        with self.lock:
-            if self.claims.pop(inc_id, None) is None:
-                return False
-            self._save()
-            return True
+            if name and name not in self.coordinators:
+                self.coordinators.append(name)
+                self.coordinators = self.coordinators[-20:]
+                self._save()
 
     def _now_iso(self) -> str:
         return self.now_fn().astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
-    def _remember(self, name: str) -> None:
-        if name and name not in self.coordinators:
-            self.coordinators.append(name)
-            self.coordinators = self.coordinators[-20:]
-
-    def export(self) -> dict:
+    def export(self, incidents: dict[str, dict]) -> dict:
+        """alerts — критические первыми; taken_by/acked_by — координатор из файла (acked_by оставлен для старого фронта).
+        claims — {id: {by, at}} по полю coordinator активных инцидентов (совместимость с фронтом)."""
         with self.lock:
-            return {
-                "alerts": sorted(self.alerts.values(), key=lambda a: (a["group"] != "critical", a["since"])),
-                "claims": dict(self.claims),
-                "coordinators": list(self.coordinators),
-            }
+            alerts = []
+            for a in sorted(self.alerts.values(), key=lambda a: (a["group"] != "critical", a["since"] or "")):
+                coord = (incidents.get(a["incident_id"]) or {}).get("coordinator") or {}
+                alerts.append({**a, "taken_by": coord.get("name"), "taken_at": coord.get("at"),
+                               "acked_by": coord.get("name"), "acked_at": coord.get("at")})
+            coordinators = list(self.coordinators)
+        claims = {i: {"by": inc["coordinator"]["name"], "at": inc["coordinator"]["at"]}
+                  for i, inc in incidents.items() if inc.get("coordinator") and inc.get("state_kind") == "active"}
+        return {"alerts": alerts, "claims": claims, "coordinators": coordinators}
