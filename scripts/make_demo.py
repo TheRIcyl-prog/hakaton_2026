@@ -27,6 +27,19 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+
+def say(text: str = "") -> str:
+    """Текст для консоли: в Windows-консоли cp1251 нет «→» — печатаем «->», остальное непечатаемое заменяем «?»
+    (раньше `demo.py list` падал с UnicodeEncodeError прямо на защите)."""
+    enc = (getattr(sys.stdout, "encoding", None) or "").lower().replace("-", "")
+    if enc != "utf8":
+        text = text.replace("→", "->")
+        try:
+            sys.stdout.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+    return text
+
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "data" / "demo" / "incidents.json"
 COORD = "КЦ ИТ Координаторы Массовых Инцидентов"
@@ -316,10 +329,10 @@ def main(argv: list[str] | None = None) -> Path:
     out = args.out if args.out.is_absolute() else ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"{out}: {len(items)} инцидентов, «сейчас» = {now.isoformat()} (смотреть с TIME_MODE=real)")
+    print(say(f"{out}: {len(items)} инцидентов, «сейчас» = {now.isoformat()} (смотреть с TIME_MODE=real)"))
     if args.use:
         (ROOT / "data" / "incidents.json").write_text(out.read_text(encoding="utf-8"), encoding="utf-8")
-        print("→ data/incidents.json")
+        print(say("→ data/incidents.json"))
     return out
 
 

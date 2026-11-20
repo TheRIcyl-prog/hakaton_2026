@@ -19,6 +19,19 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+
+def say(text: str = "") -> str:
+    """Текст для консоли: в Windows-консоли cp1251 нет «→» — печатаем «->», остальное непечатаемое заменяем «?»
+    (раньше `demo.py list` падал с UnicodeEncodeError прямо на защите)."""
+    enc = (getattr(sys.stdout, "encoding", None) or "").lower().replace("-", "")
+    if enc != "utf8":
+        text = text.replace("→", "->")
+        try:
+            sys.stdout.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+    return text
+
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / os.getenv("INCIDENTS_FILE", "data/incidents.json")
 ORIG = ROOT / "data" / "original" / "character_problems.json"
@@ -164,7 +177,7 @@ def fresh() -> None:
             if dt:
                 r[k] = fmt(dt + shift)
     save(data)
-    print(f"даты сдвинуты на {shift}")
+    print(say(f"даты сдвинуты на {shift}"))
 
 
 def main(argv: list[str]) -> None:
@@ -174,29 +187,29 @@ def main(argv: list[str]) -> None:
             import make_demo  # свой демо-файл со свежими датами
             out = make_demo.main([])  # 5 000 инцидентов «Сказочного королевства»
             save(json.loads(out.read_text(encoding="utf-8")))
-            print("рабочий файл = свой демо-файл")
+            print(say("рабочий файл = свой демо-файл"))
         else:
             WORK.write_bytes(ORIG.read_bytes())
-            print("рабочий файл = оригинал")
+            print(say("рабочий файл = оригинал"))
     elif cmd == "fresh":
         fresh()
     elif cmd == "list":
         for i, s in enumerate(STEPS, 1):
-            print(f"{i}. {s.__doc__}")
+            print(say(f"{i}. {s.__doc__}"))
     elif cmd == "step":
         n = int(argv[2])
         data = load()
         STEPS[n - 1](data)
         save(data)
-        print(f"шаг {n}: {STEPS[n - 1].__doc__}")
+        print(say(f"шаг {n}: {STEPS[n - 1].__doc__}"))
     elif cmd == "all":
         for i, s in enumerate(STEPS, 1):
-            input(f"Enter → шаг {i}: {s.__doc__}")
+            input(say(f"Enter → шаг {i}: {s.__doc__}"))
             data = load()
             s(data)
             save(data)
     else:
-        print(__doc__)
+        print(say(__doc__))
 
 
 if __name__ == "__main__":
