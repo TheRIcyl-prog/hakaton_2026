@@ -105,7 +105,9 @@ button { font-family: inherit; }
 .alert-text b { font-weight: 700; }
 .alert-time { font: 700 18px var(--font-wide); white-space: nowrap; }
 .alert .btn { background: #fff2; color: #fff; border-color: #fff6; }
-.alert .btn-ack { background: #fff; color: #111; border-color: #fff; font-weight: 700; }
+.wall .wall-banner .alert { font-size: 26px; padding: 18px 24px; justify-content: center; }
+.wall .wall-banner .alert-kind { font-size: 22px; }
+.wall .wall-banner .alert-time { font-size: 28px; }
 .alert-more { padding: 4px 18px; background: #00000040; font-size: 12px; color: #fff; }
 
 /* ---------- кнопки ---------- */
@@ -350,7 +352,6 @@ body.wall.no-cursor, body.wall.no-cursor * { cursor: none !important; }
 .al-take { background: none; border: 0; border-left: 1px solid #fff5; color: #fff; cursor: pointer; padding: 3px 9px; font-weight: 700; }
 .al-take:hover { background: #fff3; border-radius: 0 999px 999px 0; }
 .al-rest, .al-wait { font-size: 12px; opacity: .85; white-space: nowrap; }
-.alert-line .btn-ack { background: #fff; color: #111; border-color: #fff; font-weight: 700; padding: 5px 12px; }
 
 /* вкладки и фильтры */
 .toolbar { display: flex; align-items: center; gap: 14px; padding: 6px 14px; border-bottom: 1px solid var(--line); background: #11141a; min-width: 0; }

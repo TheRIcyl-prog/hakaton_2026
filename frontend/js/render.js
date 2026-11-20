@@ -73,24 +73,20 @@ export function renderStatus(state) {
   }
 }
 
-// ---------- тревоги: большие плашки (стена) ----------
-export function renderAlerts(alerts, nowMs, handlers, opts = {}) {
+// ---------- тревога на стене: красная полоса на всю ширину ----------
+// Стена без звука и показывает только критические: полоса 5 секунд, дальше мигает карточка до «Взять в работу».
+export function renderWallBanner(fresh, nowMs) {
   const el = $("#alerts");
-  const max = 2;
-  const shown = alerts.slice(0, max);
-  el.innerHTML = shown.map((a) => {
-    const inc = a.inc;
-    const rem = inc.deadline ? (Date.parse(inc.deadline) - nowMs) / 1000 : null;
-    const kind = a.group === "critical" ? "! КРИТИЧЕСКИЙ" : "→ НА КООРДИНАТОРАХ";
-    const route = a.group === "coordinators" && inc.ai && inc.ai.route ? ` · рекомендуем: «${esc(inc.ai.route.team)}»` : "";
-    const waiting = a.since ? Math.floor((Date.now() - Date.parse(a.since)) / 60000) : 0;
-    return `<div class="alert ${a.group}">
-      <span class="alert-kind">${kind}</span>
-      <span class="alert-text"><b>${esc(inc.product || "")}</b> · ${esc(inc.title)} · ${esc(shortId(inc.id))} · ${esc(inc.team || "")}${route}</span>
-      <span class="alert-time" data-deadline="${esc(inc.deadline || "")}">${rem == null ? "срок —" : (rem < 0 ? "просрочен " : "до срока ") + fmtLeft(rem)}</span>
-      <span class="alert-wait">${waiting ? `не взят ${waiting} мин` : "только что"}</span>
+  if (!fresh.length) { el.innerHTML = ""; el.className = "alerts"; return; }
+  const inc = fresh[0].inc;
+  const rem = inc.deadline ? (Date.parse(inc.deadline) - nowMs) / 1000 : null;
+  const n = fresh.length;
+  el.className = "alerts wall-banner";
+  el.innerHTML = `<div class="alert critical">
+      <span class="alert-kind">${n > 1 ? `! НОВЫХ КРИТИЧЕСКИХ: ${n}` : "! КРИТИЧЕСКИЙ"}</span>
+      <span class="alert-text"><b>${esc(inc.product || "")}</b> · ${esc(inc.title)} · ${esc(inc.team || "")}</span>
+      <span class="alert-time" data-deadline="${esc(inc.deadline || "")}">${rem == null ? "срок не задан" : (rem < 0 ? "просрочен " : "до срока ") + fmtLeft(rem)}</span>
     </div>`;
-  }).join("") + (alerts.length > max ? `<div class="alert-more">ещё ${alerts.length - max} не взятых в работу</div>` : "");
 }
 
 // ---------- тревоги: одна строка (АРМ) ----------
@@ -107,7 +103,7 @@ export function renderAlertLine(alerts, handlers) {
   el.className = `alerts alert-line ${crit ? "critical" : "coordinators"}`;
   el.innerHTML = `
     <span class="al-icon">🔔</span>
-    <b class="al-title">${n} ${plural(n, "новая тревога", "новые тревоги", "новых тревог")}:</b>
+    <b class="al-title">Не взяты в работу: ${n}</b>
     <span class="al-chips">${alerts.slice(0, max).map((a) => `
       <span class="al-chip ${a.group}" data-id="${esc(a.incident_id)}" data-key="${esc(a.key)}" title="${esc(a.group === "critical" ? "Критический" : "На координаторах")} · ${esc(a.inc.title)}">
         <span class="al-name">${a.group === "critical" ? "! " : "→ "}${esc(a.inc.product || shortId(a.inc.id))}</span><button class="al-take" title="Взять в работу — тревога снимется у всех">Взять</button>
@@ -214,10 +210,8 @@ export function renderBoard(snap, nowMs, ui) {
         entry = { sig, el };
         cardCache.set(key, entry);
       }
-      if (!ui.wall) {
-        entry.el.classList.toggle("selected", ui.selected === id);
-        entry.el.classList.toggle("alarm", !!(ui.alarmIds && ui.alarmIds.has(id)) && !inc.resolved_in.includes(g.key));
-      }
+      if (!ui.wall) entry.el.classList.toggle("selected", ui.selected === id);
+      entry.el.classList.toggle("alarm", !!(ui.alarmIds && ui.alarmIds.has(id)) && !inc.resolved_in.includes(g.key));
       els.push(entry.el);
     }
     body.querySelector(".column-empty")?.remove();

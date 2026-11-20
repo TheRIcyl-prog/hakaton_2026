@@ -2,7 +2,7 @@
 import * as R from "./render.js";
 import * as Sound from "./sound.js";
 import * as F from "./filters.js";
-import { computeAlerts, processEvents, ring } from "./alerts.js";
+import { computeAlerts, processEvents, ring, watchOverdue } from "./alerts.js";
 import { api, getMe, setMe, startPolling } from "./api.js";
 import { openTransfer, openEscalate, closeModal } from "./desk.js";
 
@@ -38,7 +38,7 @@ startPolling(
     state.snap = snap;
     state.offsetMs = Date.parse(snap.now) - Date.now();
     if (state.feedSeenSeq === null || snap.last_event_seq < state.feedSeenSeq) state.feedSeenSeq = snap.last_event_seq;
-    const fresh = processEvents(snap, { toast: R.toast, notify });
+    const fresh = processEvents(snap, { toast: R.toast, notify, me: getMe(), quiet: !state.started });
     const until = Date.now() + HIGHLIGHT_MS;
     for (const e of fresh) {
       if (!CHANGE_TYPES.has(e.type)) continue;
@@ -72,7 +72,7 @@ function renderAll() {
   renderMain();
   if (state.feedOpen) R.renderFeedList(snap, document.getElementById("feed-pop"), openFromFeed);
   if (state.openId) R.renderDrawer(snap.incidents[state.openId], snap, now, drawerHandlers, state.meta);
-  if (state.started) state.escalated = ring(state.alerts, now, { notify });
+  if (state.started) state.escalated = ring(state.alerts, now, { notify, toast: R.toast });
   R.tickCountdowns(now);
   updateChrome();
 }
@@ -129,7 +129,10 @@ setInterval(() => {
   let expired = false;
   for (const [id, c] of ui.changed) if (c.until <= Date.now()) { ui.changed.delete(id); expired = true; }
   if (expired) renderMain();
-  if (state.started) state.escalated = ring(state.alerts, now, { notify });
+  if (state.started) {
+    state.escalated = ring(state.alerts, now, { notify, toast: R.toast });
+    watchOverdue(state.snap, now, { toast: R.toast });
+  }
   blink = !blink;
   updateChrome();
 }, 1000);

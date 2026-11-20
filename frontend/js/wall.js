@@ -6,9 +6,11 @@ import { computeAlerts, processEvents, ring } from "./alerts.js";
 import { startPolling } from "./api.js";
 
 const HIGHLIGHT_MS = 20000;
+const BANNER_MS = 5000; // красная полоса на новый критический — 5 секунд, дальше мигает карточка
 const DESIGN_WIDTH = 1600;
-const state = { snap: null, online: true, lastOkMs: 0, offsetMs: 0, alerts: [], escalated: false };
-const ui = { query: "", changed: new Map(), wall: true };
+const state = { snap: null, online: true, lastOkMs: 0, offsetMs: 0, alerts: [], bannerReady: false };
+const ui = { query: "", changed: new Map(), wall: true, alarmIds: new Set() };
+const bannerSeen = new Map(); // key тревоги -> когда впервые увидели (0 — уже висела при открытии стены)
 const nowMs = () => Date.now() + state.offsetMs;
 
 function scale() {
@@ -47,15 +49,31 @@ function render() {
   const snap = state.snap;
   if (!snap) return;
   const now = nowMs();
-  state.alerts = computeAlerts(snap);
+  // стена визуально показывает только критические тревоги
+  state.alerts = computeAlerts(snap).filter((a) => a.group === "critical");
+  const first = bannerSeen.size === 0 && !state.bannerReady;
+  state.bannerReady = true;
+  const keys = new Set(state.alerts.map((a) => a.key));
+  for (const k of [...bannerSeen.keys()]) if (!keys.has(k)) bannerSeen.delete(k);
+  for (const a of state.alerts) if (!bannerSeen.has(a.key)) bannerSeen.set(a.key, first ? 0 : Date.now());
+  ui.alarmIds = new Set(state.alerts.map((a) => a.incident_id));
   R.renderCounters(snap, null);
   R.renderClock(snap, now);
-  R.renderAlerts(state.alerts, now, {}, { wall: true });
+  renderBanner(now);
   R.renderBoard(snap, now, ui);
   R.renderFeed(snap, null);
   R.tickCountdowns(now);
-  state.escalated = ring(state.alerts, now, { voice: true });
-  document.getElementById("topbar").classList.toggle("escalated", state.escalated);
+  ring(state.alerts, now, { voice: true, onlyCritical: true }); // звук и голос молчат, если выключены (по умолчанию)
+}
+
+let bannerShown = "";
+function renderBanner(now) {
+  const fresh = state.alerts.filter((a) => Date.now() - bannerSeen.get(a.key) < BANNER_MS);
+  const sig = fresh.map((a) => a.key).join();
+  if (sig === bannerShown) return;
+  bannerShown = sig;
+  R.renderWallBanner(fresh, now);
+  R.fitColumns(); // полоса съедает высоту — пересчитать «ещё N»
 }
 
 let blink = false;
@@ -67,10 +85,8 @@ setInterval(() => {
   let expired = false;
   for (const [id, c] of ui.changed) if (c.until <= Date.now()) { ui.changed.delete(id); expired = true; }
   if (expired) R.renderBoard(state.snap, now, ui);
-  // «не взят N мин» обновляется на баннере
-  if (Date.now() % 15000 < 1000) R.renderAlerts(state.alerts, now, {}, { wall: true });
-  state.escalated = ring(state.alerts, now, { voice: true }); // звук/голос молчат, если выключены
-  document.getElementById("topbar").classList.toggle("escalated", state.escalated);
+  renderBanner(now);
+  ring(state.alerts, now, { voice: true, onlyCritical: true });
   blink = !blink;
   const crit = state.alerts.filter((a) => a.group === "critical").length;
   document.title = crit && blink ? `🔴 КРИТИЧЕСКИЙ (${crit}) — видеостена` : "Видеостена · массовые инциденты";
