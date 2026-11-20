@@ -29,7 +29,7 @@ log = logging.getLogger("dashboard.ai")
 GROUP_PRIORITY = {"critical": 0, "coordinators": 1, "high": 2, "research": 4}
 DYNAMICS_PRIORITY = 3
 RISK_EXPLAIN_TOP = 20
-COMPACT_DUP = ("group_id", "master_id", "is_master", "size", "name", "confirmed")
+COMPACT_DUP = ("group_id", "master_id", "is_master", "size", "name", "confirmed", "kind")
 
 _worker: LLMWorker | None = None
 _history = dyn_mod.History(None)
@@ -117,7 +117,7 @@ def enrich(incidents: dict[str, dict], now: datetime, rules: Rules, refs=None) -
     if refs is None or getattr(refs, "history", None) is None:
         _history.observe(incidents, now)      # своя история — запасная, если бэкенд её не дал
     groups = dup_mod.find_groups(incidents, idx)
-    dup_of = {i: g for g in groups for i in g["ids"]}
+    dup_of = {i: g for g in groups if not g.get("hidden") for i in g["ids"]}
 
     watched: list[tuple[dict, list[str], dict | None]] = []   # кандидаты в GigaChat
     for inc in incidents.values():
@@ -151,7 +151,7 @@ def enrich(incidents: dict[str, dict], now: datetime, rules: Rules, refs=None) -
             ai = {k: v for k, v in ai.items() if v not in (None, False) or k == "source"}
         inc["ai"] = ai
 
-    _dup_groups = groups
+    _dup_groups = [g for g in groups if not g.get("hidden")]
     if _worker:
         _overlay_llm(incidents, watched, groups)
     for inc in incidents.values():
@@ -165,7 +165,8 @@ def _dup_card(g: dict, inc_id: str, at: str) -> dict:
     return {
         "group_id": g["id"], "master_id": g["master_id"], "is_master": inc_id == g["master_id"],
         "ids": g["ids"][:dup_mod.IDS_IN_CARD], "size": g["size"], "name": g["name"], "reason": g["reason"],
-        "confirmed": g["confirmed"], "similarity": g["similarity"], "source": g.get("source", "rules"),
+        "confirmed": g["confirmed"], "kind": g["tier"], "similarity": g["similarity"],
+        "source": g.get("source", "rules"),
         "at": g.get("at", at),
     }
 
@@ -247,45 +248,71 @@ def _overlay_llm(incidents: dict[str, dict], watched: list, groups: list[dict]) 
         if g["confirmed"]:
             continue
         members = [{"id": i, "title": incidents[i].get("title"), "text": incident_fields(incidents[i])["краткое описание"]}
-                   for i in g["ids"][:12]]
+                   for i in g["ids"][:dup_mod.BURST_SHOWN]]
         key = dup_key(members)
         found = w.lookup(key)
         if found is None:
             if not w.known(key):
-                prio = min(GROUP_PRIORITY.get(x, 9) for i in g["ids"] for x in incidents[i].get("groups", ()) or [9]) \
-                    if any(incidents[i].get("groups") for i in g["ids"]) else 5
-                tasks.append(Task(key="dup:" + key, priority=prio + 0.5, prompt=build_dup_prompt(members),
-                                  parts={"dup": key}, kind="dup", meta={"ids": [m["id"] for m in members]}))
+                prio = min((GROUP_PRIORITY.get(x, 9) for i in g["ids"] for x in incidents[i].get("groups", ())), default=5)
+                tasks.append(Task(key="dup:" + key, priority=prio + (0.5 if g["tier"] == "text" else 0.7),
+                                  prompt=build_dup_prompt(members), parts={"dup": key}, kind="dup",
+                                  meta={"ids": [m["id"] for m in members]}))
             continue
         value, source, when = found
         if not value:
             continue
         g.update(source=source, at=when)
-        if value["same"]:
-            keep = [i for i in g["ids"] if i not in value["exclude"]]
+        keep = [i for i in g["ids"][:dup_mod.BURST_SHOWN] if i not in value["exclude"]] if g["tier"] == "burst" else             [i for i in g["ids"] if i not in value["exclude"]]
+        if value["same"] and len(keep) >= 2:
             g["llm_confirmed"] = True
+            g["hidden"] = False
             if value.get("name"):
                 g["name"] = value["name"]
             if value.get("reason"):
                 g["reason"] = value["reason"]
-            if len(keep) >= 2:
-                g["ids"], g["size"] = keep, len(keep)
+            g["ids"], g["size"] = keep, len(keep)
+            if g["master_id"] not in keep:
+                g["master_id"], g["id"] = keep[0], f"burst-{keep[0]}"
         else:
             g["rejected"] = True
 
+    # Подтверждённый всплеск поглощает группы по тексту, целиком вошедшие в него; остальные — без пересечений
+    owner: dict[str, dict] = {}
     for g in groups:
-        for i in g["all_ids"]:
-            ai = incidents[i]["ai"]
-            compact = "summary_meta" not in ai
-            if g.get("rejected") or i not in g["ids"]:
-                ai.pop("duplicates", None) if compact else ai.update(duplicates=None)
-            else:
-                card = _dup_card(g, i, (ai.get("duplicates") or {}).get("at"))
-                ai["duplicates"] = {k: card[k] for k in COMPACT_DUP} if compact else card
+        if g["tier"] == "burst" and not g.get("hidden") and not g.get("rejected"):
+            for i in g["ids"]:
+                owner[i] = g
+    for g in groups:
+        if g["tier"] == "text" and not g.get("rejected"):
+            taken = [i for i in g["ids"] if i in owner]
+            if taken and len(taken) == len(g["ids"]):
+                g["rejected"] = True                      # целиком внутри всплеска
+            elif taken:
+                for i in taken:                           # пересечение — оставляем за группой по тексту
+                    b = owner.pop(i)
+                    b["ids"].remove(i)
+                    b["size"] = len(b["ids"])
+    visible = [g for g in groups if not g.get("hidden") and not g.get("rejected") and len(g["ids"]) >= 2]
+
+    assign: dict[str, dict] = {}
+    for g in visible:                                     # группы по тексту раньше всплесков (порядок find_groups)
+        for i in g["ids"]:
+            assign.setdefault(i, g)
+    for i in {i for g in groups for i in g["all_ids"]}:
+        ai = incidents[i]["ai"]
+        compact = "summary_meta" not in ai
+        g = assign.get(i)
+        if g:
+            card = _dup_card(g, i, (ai.get("duplicates") or {}).get("at"))
+            ai["duplicates"] = {k: card[k] for k in COMPACT_DUP} if compact else card
+        elif compact:
+            ai.pop("duplicates", None)
+        else:
+            ai["duplicates"] = None
 
     queued = w.submit(tasks)
     for inc_id, key in task_of.items():
         if key in queued:
             incidents[inc_id]["ai"]["pending"] = True
     global _dup_groups
-    _dup_groups = [g for g in groups if not g.get("rejected")]
+    _dup_groups = visible

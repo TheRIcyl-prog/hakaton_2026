@@ -27,6 +27,13 @@ def test_summary_is_short():
     assert len(s) <= 90 and s.endswith("…")
 
 
+def test_summary_skips_too_short_short_description():
+    s = ai.rule_ai.summary({"short_description": "Массово.", "title": "Зеркальце молчит",
+                            "description": "Массово: сообщения не доходят до получателей, у всех одна галочка."})
+    assert s == "Массово: сообщения не доходят до получателей, у всех одна галочка."
+    assert ai.rule_ai.summary({"short_description": "Сбой.", "title": "Ковёр не взлетает"}) == "Ковёр не взлетает: Сбой."
+
+
 def test_route_candidates_from_history(rules):
     recs = [make("C", 0, 2, COORD, service=SVC)]
     recs += [make(f"S{i}", 7, 2, "КЦ Ступа", service=SVC, completionDate="2026-11-10T11:00:00Z") for i in range(3)]
@@ -181,3 +188,24 @@ def test_dynamics_from_backend_history_seen_on_first_load(rules):
     assert d and "Низкий → Средний → Высокий за 30 мин" in d["text"]
     assert incs["Q"]["ai"]["dynamics"] is None
     assert ai.history("W") == []          # своя история не копится, когда есть бэкенда
+
+
+MIRROR = dict(productName="Зеркальце", service="[Зеркальце] Сообщения", scenarioName="Отправка сообщений")
+PARAPHRASES = [("Зеркальце не доставляет сообщения", "Сообщения висят с одной галочкой, получатели их не видят."),
+               ("Не уходят сообщения в Зеркальце", "Клиенты пишут, что сообщения не отправляются уже полчаса."),
+               ("Зеркальце: сообщения с одной галочкой", "Массово: сообщения не доходят до получателей, у всех одна галочка."),
+               ("Зеркальце молчит", "Сообщения в чатах Зеркальца не доставляются, звонки при этом работают.")]
+
+
+def mirror_records():
+    return [make(f"M{k}", 2, 3, "КЦ Ступа", header=h, shortDescription=d, description=d,
+                 submitDate=f"2026-11-10T10:{k * 15:02d}:00Z", **MIRROR) for k, (h, d) in enumerate(PARAPHRASES)]
+
+
+def test_paraphrases_text_tier_and_hidden_burst(rules):
+    incs = run(rules, mirror_records())
+    # по тексту склеиваются только явно похожие («одной галочкой»), остальное — всплеск, ждёт GigaChat
+    d0 = incs["M0"]["ai"]["duplicates"]
+    assert d0["kind"] == "text" and d0["ids"] == ["M0", "M2"]
+    assert incs["M1"]["ai"]["duplicates"] is None and incs["M3"]["ai"]["duplicates"] is None
+    assert [g["id"] for g in ai.duplicate_groups()] == ["dup-M0"]

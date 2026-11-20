@@ -22,9 +22,19 @@ BACKUPS = 2
 SIMILAR_SHOWN = 5
 
 
+SHORT_ENOUGH = 30   # «Массово.», «Клиенты пишут.» — это не выжимка, берём первое предложение описания
+
+
 def summary(inc: dict) -> str | None:
-    text = inc.get("short_description") or first_sentence(inc.get("description")) or inc.get("title")
-    return clip(text, SUMMARY_MAX)
+    short = inc.get("short_description")
+    if short and len(short) >= SHORT_ENOUGH:
+        return clip(short, SUMMARY_MAX)
+    desc = first_sentence(inc.get("description"))
+    best = max(filter(None, [short, desc]), key=len, default=None)
+    if not best or len(best) < SHORT_ENOUGH:
+        title = inc.get("title")
+        best = f"{title}: {best}" if title and best and title.casefold() not in best.casefold() else best or title
+    return clip(best, SUMMARY_MAX)
 
 
 def similar_brief(ids: list[str], incidents: dict[str, dict]) -> list[dict]:

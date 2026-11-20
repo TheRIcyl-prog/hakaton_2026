@@ -165,8 +165,9 @@ def test_queue_order_critical_first(tmp_path, rules):
 
     client = Gated()
     w = setup_worker(tmp_path, client, concurrency=1)
-    recs = [make("HI", 2, 3, header="Высокий"), make("RS", 20, 2, header="Исследование"),
-            make("CO", 0, 2, COORD, header="Координаторы"), make("CR", 2, 4, header="Критический")]
+    recs = [make(t, s, p, team, header=h, service=f"[Ковёр] {h}", productName=h)
+            for t, s, p, team, h in [("HI", 2, 3, "КЦ Ступа", "Высокий"), ("RS", 20, 2, "КЦ Ступа", "Исследование"),
+                                     ("CO", 0, 2, COORD, "Координаторы"), ("CR", 2, 4, "КЦ Ступа", "Критический")]]
     run(rules, recs)
     gate.set()
     assert wait_until(lambda: client.calls == 4)
@@ -213,7 +214,8 @@ def test_risk_explained_only_for_top(tmp_path, rules, monkeypatch):
     w = setup_worker(tmp_path, client)
     hot = dict(impactId=4, urgencyId=4, serviceType="Клиентский", submitDate="2026-11-10T06:00:00Z",
                deadline="2026-11-10T11:00:00Z")
-    run(rules, [make("H1", 2, 3, header="Первый", **hot), make("H2", 2, 3, header="Второй", impactId=3, **{
+    run(rules, [make("H1", 2, 3, header="Первый", **hot), make("H2", 2, 3, header="Второй", impactId=3,
+                                                              productName="Избушка", service="[Избушка] Печь", **{
         k: v for k, v in hot.items() if k != "impactId"})])
     assert wait_until(lambda: client.calls == 2 and not w.in_flight)
     with_risk = [p for p in client.prompts if "risk_comment" in p]
@@ -225,3 +227,18 @@ def test_risk_explained_only_for_top(tmp_path, rules, monkeypatch):
 def test_rules_mode_status():
     st = ai.status()
     assert st["provider"] == "rules" and st["state"] == "off"
+
+
+def test_burst_confirmed_by_gigachat_absorbs_text_group(tmp_path, rules):
+    from .test_ai_rules import mirror_records
+
+    client = FakeClient()
+    w = setup_worker(tmp_path, client)
+    run(rules, mirror_records())
+    assert wait_until(lambda: sum("один и тот же сбой" in p for p in client.prompts) == 2 and not w.wanted
+                      and not w.in_flight)
+    incs = run(rules, mirror_records())
+    cards = {i: incs[i]["ai"]["duplicates"] for i in ("M0", "M1", "M2", "M3")}
+    assert all(c and c["group_id"] == "burst-M0" and c["kind"] == "burst" for c in cards.values())
+    assert cards["M3"]["size"] == 4 and cards["M3"]["name"] == "Ковёр не взлетает у всех"
+    assert [g["id"] for g in ai.duplicate_groups()] == ["burst-M0"]
