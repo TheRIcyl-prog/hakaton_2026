@@ -1,0 +1,89 @@
+"""Настройки из .env и правила групп из config/rules.yaml."""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+
+try:  # .env необязателен
+    from dotenv import load_dotenv
+
+    load_dotenv(ROOT / ".env")
+except ImportError:  # pragma: no cover
+    pass
+
+
+def _path(value: str) -> Path:
+    p = Path(value)
+    return p if p.is_absolute() else ROOT / p
+
+
+@dataclass
+class Settings:
+    incidents_file: Path = field(default_factory=lambda: _path(os.getenv("INCIDENTS_FILE", "data/incidents.json")))
+    rules_file: Path = field(default_factory=lambda: _path(os.getenv("RULES_FILE", "config/rules.yaml")))
+    itsm_url_template: str = field(
+        default_factory=lambda: os.getenv("ITSM_URL_TEMPLATE", "https://itsm.example.mts.ru/incident/{id}")
+    )
+    time_mode: str = field(default_factory=lambda: os.getenv("TIME_MODE", "export"))
+    export_now: str | None = field(default_factory=lambda: os.getenv("EXPORT_NOW") or None)
+    poll_interval: float = field(default_factory=lambda: float(os.getenv("POLL_INTERVAL", "0.5")))
+    frontend_dist: Path = field(default_factory=lambda: ROOT / "frontend" / "dist")
+
+
+@dataclass
+class GroupRule:
+    key: str
+    title: str
+    priority_ids: list[int] | None = None
+    state_ids: list[int] | None = None
+    teams: list[str] | None = None
+    show_resolved_minutes: int = 0
+
+
+@dataclass
+class Rules:
+    states: dict[int, dict[str, str]]
+    state_enum: dict[str, int]
+    priorities: dict[int, dict[str, str]]
+    priority_text: dict[str, int]
+    coordinators_team: str
+    groups: list[GroupRule]
+
+    def state_kind(self, state_id: int | None) -> str:
+        if state_id is None or state_id not in self.states:
+            return "unknown"
+        return self.states[state_id]["kind"]
+
+    def priority_level(self, priority_id: int | None) -> str:
+        if priority_id is None or priority_id not in self.priorities:
+            return "unknown"
+        return self.priorities[priority_id]["level"]
+
+
+def load_rules(path: Path) -> Rules:
+    raw: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
+    groups = [
+        GroupRule(
+            key=key,
+            title=g.get("title", key),
+            priority_ids=g.get("priority_ids"),
+            state_ids=g.get("state_ids"),
+            teams=g.get("teams"),
+            show_resolved_minutes=int(g.get("show_resolved_minutes", 0)),
+        )
+        for key, g in raw["groups"].items()
+    ]
+    return Rules(
+        states={int(k): v for k, v in raw["states"].items()},
+        state_enum=dict(raw.get("state_enum", {})),
+        priorities={int(k): v for k, v in raw["priorities"].items()},
+        priority_text=dict(raw.get("priority_text", {})),
+        coordinators_team=raw["coordinators_team"],
+        groups=groups,
+    )
