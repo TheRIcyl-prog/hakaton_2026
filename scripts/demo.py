@@ -1,7 +1,7 @@
 """Шаги демо на защите — запасной вариант, если ручная правка JSON сорвётся.
 
     python scripts/demo.py reset        # рабочий файл = оригинал
-    python scripts/demo.py reset demo   # рабочий файл = свой демо-файл (make_demo.py) со свежими датами
+    python scripts/demo.py reset demo   # рабочий файл = свой демо-файл на 5 000 (make_demo.py), свежие даты, TIME_MODE=real
     python scripts/demo.py fresh        # оригинал со сдвигом всех дат так, что «выгрузка» = сейчас (для TIME_MODE=real)
     python scripts/demo.py list         # показать шаги
     python scripts/demo.py step 1       # применить шаг N к текущему рабочему файлу
@@ -32,6 +32,7 @@ PRIOS = {1: "Низкий", 2: "Средний", 3: "Высокий", 4: "Наи
 HIGH = ("INC000021938167", "INC000030000003")      # высокий в работе → станет критическим
 MEDIUM = ("INC000021940779", "INC000030000006")    # средний → назначат на координаторов
 RESEARCH = ("INC000021939297", "INC000030000005")  # исследование → назначат на координаторов
+RISING = ("INC000030000007",)                      # только в демо-файле: уже дважды повышали приоритет
 
 
 def load(path: Path = WORK) -> list[dict]:
@@ -140,7 +141,18 @@ def step6(data):
     r["completionDate"] = None
 
 
-STEPS = [step1, step2, step3, step4, step5, step6]
+def step7(data):
+    """Нарастающий приоритет (только демо-файл): Высокий → Наивысший — третье повышение за час."""
+    r = find(data, RISING)
+    log = r.get("workLog") if isinstance(r.get("workLog"), list) else []
+    log.append({"at": fmt(anchor(data)), "author": "Жюри", "action": "priority",
+                "text": f"приоритет: {r.get('priority')} → Наивысший", "kind": "priority",
+                "before": r.get("priority"), "after": "Наивысший", "before_id": r.get("priorityId"), "after_id": 4, "up": True})
+    r["workLog"] = log
+    set_prio(r, 4)
+
+
+STEPS = [step1, step2, step3, step4, step5, step6, step7]
 
 
 def fresh() -> None:
@@ -160,8 +172,8 @@ def main(argv: list[str]) -> None:
     if cmd == "reset":
         if len(argv) > 2 and argv[2] == "demo":
             import make_demo  # свой демо-файл со свежими датами
-            make_demo.main()
-            save(json.loads(make_demo.OUT.read_text(encoding="utf-8")))
+            out = make_demo.main([])  # 5 000 инцидентов «Сказочного королевства»
+            save(json.loads(out.read_text(encoding="utf-8")))
             print("рабочий файл = свой демо-файл")
         else:
             WORK.write_bytes(ORIG.read_bytes())
