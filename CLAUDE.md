@@ -30,7 +30,8 @@
 - `backend/app/groups.py` — группы. `diff.py` — события. `store.py` — опрос файла и снимок. `clock.py` — «сейчас».
 - `backend/app/forecast.py` — прогноз нарушения срока (медиана по истории). `actions.py` — очередь «Что делать сейчас» + черновики.
 - `frontend/js/`: `main.js` (АРМ), `wall.js` (стена), `desk.js` (диалоги передачи/эскалации), `render.js` (общая отрисовка),
-  `alerts.js` (звук/голос по тревогам с сервера), `api.js` (опрос и действия), `sound.js`. `frontend/itsm.html` — мини-ITSM.
+  `alerts.js` (звук/голос по тревогам с сервера), `api.js` (опрос и действия), `sound.js` (звук и голос — отдельные
+  переключатели, выбор в localStorage), `filters.js` (фильтры АРМ, пока в браузере). `frontend/itsm.html` — мини-ITSM.
 - `backend/app/ai/` — ИИ: правила `rules.py` (сейчас включены) и GigaChat `llm.py` (готов, но **выключен**: `LLM_PROVIDER=rules`).
 - `docs/contract.md` — API и форма Incident для фронта. `docs/sample-snapshot.json` — живой пример ответа.
 - `docs/data-report.md` — разведка данных.

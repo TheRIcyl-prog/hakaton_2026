@@ -7,7 +7,7 @@ import { startPolling } from "./api.js";
 
 const HIGHLIGHT_MS = 20000;
 const DESIGN_WIDTH = 1600;
-const state = { snap: null, online: true, lastOkMs: 0, offsetMs: 0, alerts: [], escalated: false, sound: false };
+const state = { snap: null, online: true, lastOkMs: 0, offsetMs: 0, alerts: [], escalated: false };
 const ui = { query: "", changed: new Map(), wall: true };
 const nowMs = () => Date.now() + state.offsetMs;
 
@@ -54,7 +54,7 @@ function render() {
   R.renderBoard(snap, now, ui);
   R.renderFeed(snap, null);
   R.tickCountdowns(now);
-  if (state.sound) state.escalated = ring(state.alerts, now, { voice: true });
+  state.escalated = ring(state.alerts, now, { voice: true });
   document.getElementById("topbar").classList.toggle("escalated", state.escalated);
 }
 
@@ -69,23 +69,24 @@ setInterval(() => {
   if (expired) R.renderBoard(state.snap, now, ui);
   // минута ожидания «Принял» обновляется на баннере
   if (Date.now() % 15000 < 1000) R.renderAlerts(state.alerts, now, {}, { wall: true });
-  if (state.sound) state.escalated = ring(state.alerts, now, { voice: true });
-  else state.escalated = state.alerts.some((a) => a.group === "critical" && a.since && Date.now() - Date.parse(a.since) > 120000);
+  state.escalated = ring(state.alerts, now, { voice: true }); // звук/голос молчат, если выключены
   document.getElementById("topbar").classList.toggle("escalated", state.escalated);
   blink = !blink;
   const crit = state.alerts.filter((a) => a.group === "critical").length;
   document.title = crit && blink ? `🔴 КРИТИЧЕСКИЙ (${crit}) — видеостена` : "Видеостена · массовые инциденты";
 }, 1000);
 
-// Звук на стене по умолчанию выключен (обычно звук — в гарнитурах на АРМ). Включается кликом.
-const btn = document.getElementById("sound-btn");
-R.renderSoundBtn(false, false);
-btn.onclick = () => {
-  state.sound = !state.sound;
-  if (state.sound) Sound.initAudio(); else Sound.setEnabled(false);
-  R.renderSoundBtn(state.sound, Sound.hasVoice());
-  setTimeout(() => R.renderSoundBtn(state.sound, Sound.hasVoice()), 800);
-};
+// Звук и голос на стене — отдельные переключатели, по умолчанию выключены (обычно звук — в гарнитурах на АРМ).
+// Выбор запоминается; после перезагрузки браузер даст звук только после первого клика по странице.
+Sound.loadPrefs("wall", { sound: false, voice: false });
+const paintSound = Sound.bindToggles(document.getElementById("sound-btn"), document.getElementById("voice-btn"));
+function unlockOnce() {
+  if (!Sound.isUnlocked()) { Sound.unlock(); paintSound(); setTimeout(paintSound, 800); }
+  document.removeEventListener("pointerdown", unlockOnce);
+  document.removeEventListener("keydown", unlockOnce);
+}
+document.addEventListener("pointerdown", unlockOnce);
+document.addEventListener("keydown", unlockOnce);
 
 // Курсор не мешает на большом экране
 let hideTimer;

@@ -7,24 +7,28 @@
   <link rel="icon" id="favicon" href="data:,">
   <link rel="stylesheet" href="/styles.css">
 </head>
-<body>
+<body class="arm">
   <header class="topbar" id="topbar">
     <div class="brand">
       <div class="brand-mark">МТС</div>
-      <div class="brand-title">АРМ координатора<br><span>массовых инцидентов</span></div>
+      <div class="brand-title">АРМ координатора</div>
     </div>
     <nav class="counters" id="counters"></nav>
     <div class="topbar-right">
-      <input id="search" class="search" type="search" placeholder="Поиск: номер, продукт, команда…  ( / )" autocomplete="off">
+      <input id="search" class="search" type="search" placeholder="Поиск  ( / )" autocomplete="off" title="Номер, продукт, команда, исполнитель">
+      <button class="icon-btn" id="sound-btn"></button>
+      <button class="icon-btn" id="voice-btn"></button>
       <div class="clock" id="clock"></div>
       <div class="status" id="status"></div>
-      <div class="menu">
+      <div class="menu-wrap">
         <button class="icon-btn" id="me" title="Сменить имя"></button>
-        <button class="icon-btn" id="sound-btn" title="Звук и голос"></button>
-        <a class="icon-btn" href="/wall" target="_blank" title="Открыть экран видеостены">🖥 Стена</a>
-        <button class="icon-btn" id="export-btn" title="Скачать текущий файл инцидентов">⭳ Экспорт</button>
-        <button class="icon-btn" id="import-btn" title="Загрузить файл инцидентов">⭱ Импорт</button>
-        <input type="file" id="import-input" accept=".json,application/json" hidden>
+        <button class="icon-btn" id="menu-btn" title="Ещё">⋯</button>
+        <div class="popover menu-pop hidden" id="menu-pop">
+          <a href="/wall" target="_blank">🖥 Открыть видеостену</a>
+          <button id="export-btn">⭳ Экспорт файла инцидентов</button>
+          <button id="import-btn">⭱ Импорт файла инцидентов</button>
+          <input type="file" id="import-input" accept=".json,application/json" hidden>
+        </div>
       </div>
     </div>
   </header>
@@ -32,16 +36,22 @@
   <div id="filebar" class="filebar hidden"></div>
   <section id="alerts" class="alerts"></section>
 
-  <section class="actions" id="actions-wrap">
-    <div class="actions-title">Что делать сейчас</div>
-    <div class="actions-list" id="actions"></div>
+  <section class="toolbar">
+    <div class="tabs">
+      <button class="tab active" data-view="board">Доска</button>
+      <button class="tab" data-view="queue">Что делать сейчас <b id="queue-count"></b></button>
+      <button class="tab" id="feed-btn">Лента <b id="feed-count"></b></button>
+    </div>
+    <div class="filters" id="filters"></div>
   </section>
 
-  <main class="board" id="board"></main>
+  <div class="workspace" id="workspace">
+    <main class="board" id="board"></main>
+    <section class="queue hidden" id="queue"></section>
+    <aside class="panel hidden" id="drawer"></aside>
+  </div>
 
-  <footer class="feed" id="feed"></footer>
-
-  <aside class="drawer hidden" id="drawer"></aside>
+  <div class="popover feed-pop hidden" id="feed-pop"></div>
   <div class="modal hidden" id="modal"></div>
   <div class="toasts" id="toasts"></div>
 
@@ -51,7 +61,7 @@
       <h1>Начать смену</h1>
       <p>Представьтесь — имя видно коллегам и на видеостене: кто принял тревогу и кто ведёт инцидент.</p>
       <input id="me-input" class="name-input" placeholder="Имя и фамилия" autocomplete="name">
-      <p class="small">Браузер разрешает звук, голос и уведомления только после нажатия кнопки.</p>
+      <p class="small">Браузер разрешает звук, голос и уведомления только после нажатия кнопки. Звук и голос потом включаются отдельно в шапке.</p>
       <button class="btn btn-primary big" id="start-btn">Начать смену</button>
       <button class="btn btn-ghost" id="start-silent">Без звука</button>
     </div>

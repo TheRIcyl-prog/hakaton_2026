@@ -1,23 +1,43 @@
 // АРМ координатора: работа с инцидентами. Видеостена — wall.js.
 import * as R from "./render.js";
 import * as Sound from "./sound.js";
+import * as F from "./filters.js";
 import { computeAlerts, processEvents, ring } from "./alerts.js";
 import { api, getMe, setMe, startPolling } from "./api.js";
 import { openTransfer, openEscalate, closeModal } from "./desk.js";
 
 const HIGHLIGHT_MS = 15000;
+const VIEW_KEY = "mi-dashboard:view";
 const CHANGE_TYPES = new Set(["priority_changed", "deadline_changed", "team_changed", "assignee_changed", "status_changed",
   "became_critical", "to_coordinators", "from_coordinators", "resolved", "reopened", "critical_resolved", "new", "comment", "escalated"]);
 
-const state = { snap: null, online: true, lastOkMs: 0, offsetMs: 0, openId: null, started: false, alerts: [], escalated: false, meta: null };
-const ui = { query: "", changed: new Map(), open: (id) => openDrawer(id) };
+const state = {
+  snap: null, online: true, lastOkMs: 0, offsetMs: 0, openId: null, started: false, alerts: [], escalated: false, meta: null,
+  view: loadView(), feedOpen: false, feedSeenSeq: null,
+};
+const ui = {
+  query: "", changed: new Map(), open: (id) => openDrawer(id), predicate: null, limits: {}, why: new Set(),
+  selected: null, alarmIds: new Set(), actions: new Map(),
+  more: (key) => { ui.limits[key] = (ui.limits[key] || 60) + 60; renderMain(); },
+  act: {
+    transfer: (id) => doTransfer(id),
+    escalate: (id, draft) => doEscalate(id, draft),
+    why: (key) => { ui.why.has(key) ? ui.why.delete(key) : ui.why.add(key); renderMain(); },
+  },
+};
 const nowMs = () => Date.now() + state.offsetMs;
+const filtersEl = document.getElementById("filters");
+
+function loadView() {
+  try { return localStorage.getItem(VIEW_KEY) === "queue" ? "queue" : "board"; } catch { return "board"; }
+}
 
 // ---------- данные ----------
 startPolling(
   (snap) => {
     state.snap = snap;
     state.offsetMs = Date.parse(snap.now) - Date.now();
+    if (state.feedSeenSeq === null || snap.last_event_seq < state.feedSeenSeq) state.feedSeenSeq = snap.last_event_seq;
     const fresh = processEvents(snap, { toast: R.toast, notify });
     const until = Date.now() + HIGHLIGHT_MS;
     for (const e of fresh) {
@@ -39,21 +59,64 @@ startPolling(
 );
 api.meta().then((m) => { state.meta = m; renderAll(); }).catch(() => {});
 
+F.mountFilters(filtersEl, { change: () => { ui.limits = {}; renderMain(); } });
+
 function renderAll() {
   const snap = state.snap;
   if (!snap) return;
   const now = nowMs();
   state.alerts = computeAlerts(snap);
-  R.renderCounters(snap, jumpTo);
+  R.renderCounters(snap, jumpTo, { compact: true });
   R.renderClock(snap, now);
-  R.renderAlerts(state.alerts, now, { ack: doAck, ackAll: doAckAll, open: openDrawer });
-  R.renderActions(snap, { copy, open: openDrawer, transfer: doTransfer, escalate: doEscalate });
-  R.renderBoard(snap, now, ui);
-  R.renderFeed(snap, openDrawer);
+  R.renderAlertLine(state.alerts, { ack: doAck, ackAll: doAckAll, open: openDrawer });
+  renderMain();
+  if (state.feedOpen) R.renderFeedList(snap, document.getElementById("feed-pop"), openFromFeed);
   if (state.openId) R.renderDrawer(snap.incidents[state.openId], snap, now, drawerHandlers, state.meta);
   if (state.started) state.escalated = ring(state.alerts, now, { notify });
   R.tickCountdowns(now);
   updateChrome();
+}
+
+// Доска или очередь + фильтры. Вызывается и при смене фильтров/поиска.
+function renderMain() {
+  const snap = state.snap;
+  if (!snap) return;
+  const now = nowMs();
+  ui.predicate = F.makePredicate(snap, now, getMe());
+  ui.selected = state.openId;
+  ui.alarmIds = new Set(state.alerts.map((a) => a.incident_id));
+  ui.actions = new Map();
+  for (const a of snap.actions || []) if (!ui.actions.has(a.incident_id)) ui.actions.set(a.incident_id, a);
+
+  const shown = R.renderBoard(snap, now, ui);
+  const total = new Set(snap.groups.flatMap((g) => g.ids)).size;
+  const shownUniq = ui.predicate || ui.query
+    ? new Set(snap.groups.flatMap((g) => g.ids).filter(matchesAll)).size
+    : total;
+  F.renderFilters(filtersEl, snap, shownUniq, total);
+
+  const queueEl = document.getElementById("queue");
+  if (state.view === "queue") R.renderQueue(snap, queueEl, { copy, open: openDrawer, transfer: doTransfer, escalate: doEscalate }, ui.predicate);
+  const qn = (snap.actions || []).length;
+  document.getElementById("queue-count").textContent = qn ? String(qn) : "";
+  document.getElementById("board").classList.toggle("hidden", state.view !== "board");
+  queueEl.classList.toggle("hidden", state.view !== "queue");
+  document.querySelectorAll(".tab[data-view]").forEach((t) => t.classList.toggle("active", t.dataset.view === state.view));
+
+  const unseen = Math.max(0, snap.last_event_seq - (state.feedSeenSeq ?? snap.last_event_seq));
+  document.getElementById("feed-count").textContent = unseen && !state.feedOpen ? String(Math.min(unseen, 99)) : "";
+  R.tickCountdowns(now);
+  return shown;
+}
+
+// Подходит ли инцидент под поиск и фильтры (для счётчика «показано X из Y», не зависит от порций)
+function matchesAll(id) {
+  const inc = state.snap.incidents[id];
+  if (!inc) return false;
+  if (ui.predicate && !ui.predicate(inc)) return false;
+  if (!ui.query) return true;
+  const hay = [inc.id, inc.title, inc.product, inc.service, inc.team, inc.assignee, inc.state, inc.priority].join(" ").toLowerCase();
+  return ui.query.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
 }
 
 // ---------- раз в секунду ----------
@@ -65,11 +128,13 @@ setInterval(() => {
   R.renderClock(state.snap, now);
   let expired = false;
   for (const [id, c] of ui.changed) if (c.until <= Date.now()) { ui.changed.delete(id); expired = true; }
-  if (expired) R.renderBoard(state.snap, now, ui);
+  if (expired) renderMain();
   if (state.started) state.escalated = ring(state.alerts, now, { notify });
   blink = !blink;
   updateChrome();
 }, 1000);
+// «ждут N мин» в строке тревог
+setInterval(() => { if (state.snap) R.renderAlertLine(state.alerts, { ack: doAck, ackAll: doAckAll, open: openDrawer }); }, 15000);
 
 function updateChrome() {
   const crit = state.alerts.filter((a) => a.group === "critical").length;
@@ -81,7 +146,8 @@ function updateChrome() {
   setFavicon(crit ? (blink ? "#ff0032" : "#ffffff") : coord ? "#a78bfa" : "#ff0032");
   document.getElementById("topbar").classList.toggle("escalated", state.escalated);
   const me = document.getElementById("me");
-  if (me) me.textContent = getMe() ? `👤 ${getMe()}` : "👤 представьтесь";
+  const name = getMe();
+  if (me) { me.textContent = name ? `👤 ${name.split(" ")[0]}` : "👤 представьтесь"; me.title = name ? `${name} · сменить имя` : "Представьтесь"; }
 }
 
 let lastFav = "";
@@ -127,6 +193,10 @@ function doTransfer(id) {
 function doEscalate(id, draft) {
   if (needName()) return;
   const inc = state.snap.incidents[id];
+  if (!draft) {
+    const a = (state.snap.actions || []).find((x) => x.incident_id === id && x.kind === "escalate");
+    draft = a ? a.draft : null;
+  }
   if (inc) openEscalate(inc, draft, { copy, onDone: (t) => R.toast(`✔ ${t}`) });
 }
 
@@ -134,6 +204,7 @@ const drawerHandlers = {
   close: () => openDrawer(null),
   copy,
   open: (id) => openDrawer(id),
+  ack: doAck,
   claim: (id) => act(() => api.claim(id), "Взято в работу"),
   release: (id) => act(() => api.release(id)),
   transfer: doTransfer,
@@ -144,16 +215,32 @@ const drawerHandlers = {
 
 function openDrawer(id) {
   state.openId = id && state.snap && state.snap.incidents[id] ? id : null;
+  document.getElementById("workspace").classList.toggle("with-panel", !!state.openId);
   R.renderDrawer(state.openId ? state.snap.incidents[state.openId] : null, state.snap, nowMs(), drawerHandlers, state.meta);
+  ui.selected = state.openId;
+  document.querySelectorAll("#board .card").forEach((c) => c.classList.toggle("selected", c.dataset.id === state.openId));
   R.tickCountdowns(nowMs());
+  if (state.view === "board" && state.snap) R.renderBoard(state.snap, nowMs(), ui);
+}
+
+function openFromFeed(id) {
+  setFeed(false);
+  openDrawer(id);
+}
+
+function setView(v) {
+  state.view = v;
+  try { localStorage.setItem(VIEW_KEY, v); } catch { /* приватный режим */ }
+  renderMain();
 }
 
 function jumpTo(key) {
+  if (state.view !== "board") setView("board");
   const col = document.getElementById(`col-${key}`);
   if (!col) return;
-  col.scrollIntoView({ behavior: "smooth", inline: "start" });
-  col.style.outline = "2px solid var(--muted)";
-  setTimeout(() => (col.style.outline = ""), 800);
+  col.scrollIntoView({ behavior: "smooth", inline: "nearest", block: "nearest" });
+  col.classList.add("pulse-col");
+  setTimeout(() => col.classList.remove("pulse-col"), 900);
 }
 
 async function copy(text, btn) {
@@ -177,6 +264,32 @@ function notify(title, body, id, critical) {
   } catch { /* браузер запретил */ }
 }
 
+// ---------- шапка: звук, голос, меню, лента ----------
+Sound.loadPrefs("arm", { sound: true, voice: true });
+const paintSound = Sound.bindToggles(document.getElementById("sound-btn"), document.getElementById("voice-btn"));
+
+const menuPop = document.getElementById("menu-pop");
+document.getElementById("menu-btn").onclick = (e) => { e.stopPropagation(); setFeed(false); menuPop.classList.toggle("hidden"); };
+const feedPop = document.getElementById("feed-pop");
+function setFeed(open) {
+  state.feedOpen = open;
+  feedPop.classList.toggle("hidden", !open);
+  document.getElementById("feed-btn").classList.toggle("active", open);
+  if (open && state.snap) {
+    state.feedSeenSeq = state.snap.last_event_seq;
+    R.renderFeedList(state.snap, feedPop, openFromFeed);
+    const b = document.getElementById("feed-btn").getBoundingClientRect();
+    feedPop.style.left = `${Math.max(8, Math.min(b.left, window.innerWidth - feedPop.offsetWidth - 8))}px`;
+    feedPop.style.top = `${b.bottom + 6}px`;
+  }
+  if (state.snap) renderMain();
+}
+document.getElementById("feed-btn").onclick = (e) => { e.stopPropagation(); menuPop.classList.add("hidden"); setFeed(!state.feedOpen); };
+feedPop.onclick = (e) => e.stopPropagation();
+menuPop.onclick = (e) => e.stopPropagation();
+document.addEventListener("click", () => { menuPop.classList.add("hidden"); if (state.feedOpen) setFeed(false); });
+document.querySelectorAll(".tab[data-view]").forEach((t) => (t.onclick = () => setView(t.dataset.view)));
+
 // ---------- начало смены ----------
 const meInput = document.getElementById("me-input");
 meInput.value = getMe();
@@ -185,15 +298,16 @@ function start(withSound) {
   if (!name) { meInput.focus(); meInput.classList.add("invalid"); return; }
   setMe(name);
   document.getElementById("start-overlay").classList.add("hidden");
+  Sound.unlock();
   if (withSound) {
-    Sound.initAudio();
     if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
   } else {
-    Sound.setEnabled(false);
+    Sound.setSound(false);
+    Sound.setVoice(false);
   }
   state.started = true;
-  R.renderSoundBtn(Sound.isEnabled(), Sound.hasVoice());
-  setTimeout(() => R.renderSoundBtn(Sound.isEnabled(), Sound.hasVoice()), 1000);
+  paintSound();
+  setTimeout(paintSound, 1000);
   renderAll();
 }
 document.getElementById("start-btn").onclick = () => start(true);
@@ -203,16 +317,11 @@ document.getElementById("me").onclick = () => {
   document.getElementById("start-overlay").classList.remove("hidden");
   meInput.focus();
 };
-document.getElementById("sound-btn").onclick = () => {
-  if (!Sound.isEnabled()) Sound.initAudio(); else Sound.setEnabled(false);
-  R.renderSoundBtn(Sound.isEnabled(), Sound.hasVoice());
-  if (Sound.isEnabled()) Sound.playTick();
-};
 
 // Импорт / экспорт файла инцидентов
-document.getElementById("export-btn").onclick = () => { window.location.href = "/api/export"; };
+document.getElementById("export-btn").onclick = () => { menuPop.classList.add("hidden"); window.location.href = "/api/export"; };
 const importInput = document.getElementById("import-input");
-document.getElementById("import-btn").onclick = () => importInput.click();
+document.getElementById("import-btn").onclick = () => { menuPop.classList.add("hidden"); importInput.click(); };
 importInput.onchange = async () => {
   const f = importInput.files[0];
   importInput.value = "";
@@ -229,7 +338,7 @@ importInput.onchange = async () => {
 };
 
 const search = document.getElementById("search");
-search.oninput = () => { ui.query = search.value.trim(); if (state.snap) R.renderBoard(state.snap, nowMs(), ui); R.tickCountdowns(nowMs()); };
+search.oninput = () => { ui.query = search.value.trim(); ui.limits = {}; renderMain(); };
 
 // Горячие клавиши: Пробел — принять верхнюю тревогу, Esc — закрыть, / — поиск
 document.addEventListener("keydown", (e) => {
@@ -237,6 +346,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (!document.getElementById("modal").classList.contains("hidden")) closeModal();
     else if (typing) e.target.blur();
+    else if (state.feedOpen) setFeed(false);
     else openDrawer(null);
   } else if (e.key === "/" && !typing) { e.preventDefault(); search.focus(); }
   else if (e.key === " " && !typing && state.started && state.alerts.length) { e.preventDefault(); doAck(state.alerts[0].key); }
