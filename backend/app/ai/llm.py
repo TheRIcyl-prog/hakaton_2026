@@ -23,7 +23,7 @@ from ..adapter import iso
 from .text import SUMMARY_MAX, clip, scrub
 
 log = logging.getLogger("dashboard.ai")
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 RETRY_SECONDS = 60.0
 RATE_BACKOFF = 5.0     # 429 (лимит/второй поток у бесплатного тарифа): 5 → 10 → 20 → … → RETRY_SECONDS
 SAVE_EVERY = 2.0
@@ -94,7 +94,8 @@ def build_incident_prompt(fields: dict, parts: dict) -> str:
     lines = ["Инцидент:", json.dumps({k: v for k, v in fields.items() if v}, ensure_ascii=False, indent=1)]
     answer = []
     if "summary" in parts:
-        answer.append(f'"summary": "одна строка до {SUMMARY_MAX} знаков: что сломалось и у кого"')
+        answer.append(f'"summary": "одна строка до {SUMMARY_MAX} знаков без восклицаний: что сломалось и у кого '
+                      f'(продукт/сервис и кого затронуло)"')
     if "route" in parts:
         r = parts["route"]
         lines.append("Сейчас инцидент у координаторов, его надо передать команде. Кандидаты по истории похожих инцидентов:")
@@ -102,14 +103,17 @@ def build_incident_prompt(fields: dict, parts: dict) -> str:
             lines.append(f"- {c['team']}: вела {c['count']} из {r['total']} похожих, решила {c['solved']}")
         lines.append("Выбери команду ТОЛЬКО из этого списка.")
         answer.append('"route_team": "точное название команды из списка"')
-        answer.append('"route_reason": "почему она, 1–2 предложения"')
+        answer.append('"route_reason": "1–2 предложения: почему по сути проблемы (какой сервис или компонент она '
+                      'обслуживает, какой симптом); не пиши общих слов вроде «наибольший опыт», цифры не повторяй"')
     if "risk" in parts:
         rk = parts["risk"]
         lines.append(f"Риск стать критическим (посчитан кодом): {rk['score']}/100. Факторы: {'; '.join(rk['factors']) or 'нет'}.")
-        answer.append('"risk_comment": "чем опасен и на что смотреть координатору, 1 предложение"')
+        answer.append('"risk_comment": "1 предложение: что конкретно может случиться дальше и что проверить первым; '
+                      'не перечисляй факторы и не называй баллы"')
     if "dynamics" in parts:
         lines.append(f"Тревожная динамика по истории изменений: {parts['dynamics']['text']}.")
-        answer.append('"dynamics_comment": "одна фраза для координатора: что эта динамика значит, до 120 знаков"')
+        answer.append('"dynamics_comment": "одна фраза до 120 знаков: что эта динамика говорит о сбое и что сделать '
+                      'координатору; без общих слов вроде «требует вмешательства»"')
     lines.append("Верни JSON: {" + ", ".join(answer) + "}")
     return "\n".join(lines)
 
@@ -141,7 +145,15 @@ def _s(v, limit: int) -> str | None:
 
 
 def parse_incident_answer(text: str, parts: dict) -> dict[str, dict | None]:
-    data = _json(text)
+    try:
+        data = _json(text)
+    except ValueError:
+        # Просили только выжимку, а модель ответила строкой без JSON — это и есть выжимка
+        plain = text.strip().strip("`\"«» ").splitlines()[0].strip() if text.strip() else ""
+        if set(parts) == {"summary"} and plain and "{" not in plain:
+            data = {"summary": plain}
+        else:
+            raise
     out: dict[str, dict | None] = {}
     if "summary" in parts:
         s = _s(data.get("summary"), SUMMARY_MAX)

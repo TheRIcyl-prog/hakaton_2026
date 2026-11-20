@@ -89,6 +89,8 @@ def test_parse_answer_only_candidates_and_short_summary():
     assert bad["route"] is None
     with pytest.raises(ValueError):
         parse_incident_answer("не json", parts)
+    plain = parse_incident_answer('"Золотая рыбка зависла при подтверждении платежа"', {"summary": True})
+    assert plain["summary"]["text"] == "Золотая рыбка зависла при подтверждении платежа"
     d = parse_dup_answer('{"same": "да", "name": "Сбой", "exclude": ["X2", "чужой"]}', ["X1", "X2"])
     assert d["same"] and d["exclude"] == ["X2"]
 
@@ -267,3 +269,17 @@ def test_rate_limit_429_short_backoff_not_offline(tmp_path, rules, monkeypatch):
     assert "лимит" in ai.status()["label"]
     assert wait_until(lambda: w.snapshot_status()["done"] == 1, 2)   # повтор через 0,2 с, а не через минуту
     assert w.snapshot_status()["state"] == "ok"
+
+
+def test_gigachat_offered_only_weighty_candidates(tmp_path, rules):
+    client = FakeClient()
+    w = setup_worker(tmp_path, client)
+    recs = [make("C", 0, 2, COORD, service=SVC)]
+    recs += [make(f"S{i}", 7, 2, "КЦ Ступа", service=SVC, completionDate="2026-11-10T11:00:00Z") for i in range(10)]
+    recs += [make(f"L{i}", 7, 2, "КЦ Леший", service=SVC, completionDate="2026-11-10T11:00:00Z") for i in range(3)]
+    recs += [make("V0", 7, 2, "КЦ Водяной", service=SVC, completionDate="2026-11-10T11:00:00Z")]
+    incs = run(rules, recs)
+    assert [c["team"] for c in incs["C"]["ai"]["route"]["candidates"]] == ["КЦ Ступа", "КЦ Леший", "КЦ Водяной"]
+    assert wait_until(lambda: client.calls == 1 and not w.in_flight)
+    prompt = client.prompts[0]
+    assert "КЦ Ступа" in prompt and "КЦ Леший" in prompt and "КЦ Водяной" not in prompt   # 1 из 14 — не кандидат

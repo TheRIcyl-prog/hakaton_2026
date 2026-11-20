@@ -29,6 +29,7 @@ log = logging.getLogger("dashboard.ai")
 GROUP_PRIORITY = {"critical": 0, "coordinators": 1, "high": 2, "research": 4}
 DYNAMICS_PRIORITY = 3
 RISK_EXPLAIN_TOP = 20
+ROUTE_VIABLE_SHARE = 0.2   # кандидат для GigaChat — не меньше 20% похожих от лидера
 COMPACT_DUP = ("group_id", "master_id", "is_master", "size", "name", "confirmed", "kind")
 
 _worker: LLMWorker | None = None
@@ -208,6 +209,8 @@ def _overlay_llm(incidents: dict[str, dict], watched: list, groups: list[dict]) 
         route = ai["route"]
         if route:
             cands, total = route["_cands"], route["_total"]
+            # GigaChat выбирает только из весомых: команда с «6 из 378» — шум, а не кандидат
+            viable = [c for c in cands if c["count"] >= max(2, ROUTE_VIABLE_SHARE * cands[0]["count"])] or cands[:1]
 
             def set_route(v, source, when, route=route, cands=cands, total=total):
                 new = rule_ai.route_from(v["team"], cands, total, route["basis"], incidents)
@@ -216,7 +219,7 @@ def _overlay_llm(incidents: dict[str, dict], watched: list, groups: list[dict]) 
                 new.update(_meta(source, when))
                 ai["route"] = new
 
-            take("route", route_key(fields, cands), set_route, {"cands": cands, "total": total})
+            take("route", route_key(fields, viable), set_route, {"cands": viable, "total": total})
 
         risk = ai["risk"]
         if risk and inc["id"] in risk_top_ids:
