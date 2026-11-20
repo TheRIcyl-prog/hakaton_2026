@@ -198,6 +198,22 @@ def itsm_escalate(inc_id: str, b: EscalateBody):
     return _run(inc_id, lambda: itsm.escalate(inc_id, b.by, b.comment))
 
 
+class DuplicatesBody(BaseModel):
+    master_id: str
+    ids: list[str]
+    by: str
+
+
+@app.post("/api/duplicates/confirm")
+def confirm_duplicates(b: DuplicatesBody):
+    """«Да, это один сбой»: isMaster у мастера, isDouble у остальных + журнал (п. 8.4)."""
+    try:
+        itsm.confirm_duplicates(b.master_id, b.ids, b.by)
+    except ItsmError as e:
+        raise HTTPException(e.status, str(e))
+    return {"ok": True, "incidents": [store.incident(i) for i in dict.fromkeys([b.master_id, *b.ids])]}
+
+
 @app.get("/api/meta")
 def meta():
     """Справочники для форм: статусы, переходы, приоритеты, SLA, команды."""

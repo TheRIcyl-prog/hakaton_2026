@@ -200,6 +200,7 @@ comment, escalated,` ⚑ `taken, released`. При старте сервера �
 | `POST /api/itsm/{id}/state` | `{state_id, reason?, comment?, by, expected_hash?}` | смена статуса по `transitions` |
 | `POST /api/itsm/{id}/priority` | `{priority_id, recalc_deadline?, comment?, by, expected_hash?}` | приоритет (+ срок по SLA) |
 | `POST /api/itsm/{id}/deadline` | `{deadline (ISO UTC), comment?, by, expected_hash?}` | срок |
+| ⚑ `POST /api/duplicates/confirm` | `{master_id, ids, by}` | «Да, это один сбой»: `isMaster` у мастера, `isDouble` у остальных + журнал (`action: duplicates`), одной записью. Ответ `{ok, incidents: [Incident…]}` |
 | `POST /api/itsm/{id}/comment` | `{text, by}` | комментарий в журнал |
 | `POST /api/itsm/{id}/escalate` | `{comment?, by}` | эскалация (в журнал) |
 | `GET /api/meta` | — | статусы, переходы, приоритеты, SLA, команды |
@@ -211,6 +212,8 @@ comment, escalated,` ⚑ `taken, released`. При старте сервера �
 ## Справочники для ИИ ⚑ (договорённость бэк ↔ ИИ)
 Store на каждую правку строит `backend/app/refs.Refs` одним проходом и вызывает
 `ai.enrich(incidents, now, rules, refs=refs)`, если у `enrich` есть параметр `refs` (иначе — старую сигнатуру).
+ИИ берёт из refs только `refs.history.get(id)` (O(1), записи только читать). Когда GigaChat дописал ответы
+(`ai.consume_dirty()`), Store вызывает только `ai.enrich` и пересобирает очередь действий — прогноз не пересчитывается.
 `refs.changed` / `refs.removed` — id изменённых по `hash`; `refs.median_resolution(team, prio)`; `refs.history` — история
 выше (формат совместим с `ai/dynamics.History.get()`). Справочник «кому передать / всплеск» — у ИИ (`ai/index.py`).
 Замер: `python scripts/bench.py` (5 000 и 10 000), автотест `backend/tests/test_speed.py`.

@@ -240,20 +240,26 @@ class Store:
         refs = self.refs or Refs(incidents, now, history=self.history)
         refs.now = now
         forecast_all(incidents, now, refs)
+        self._enrich(incidents, now)
+        self.actions = build_actions(incidents, now)
+        self._last_ai = time.monotonic()
+
+    def _enrich(self, incidents: dict[str, dict], now: datetime) -> None:
+        refs = self.refs or Refs(incidents, now, history=self.history)
+        refs.now = now
         if _ENRICH_TAKES_REFS:
             enrich(incidents, now, self.rules, refs=refs)
         else:
             enrich(incidents, now, self.rules)
-        self.actions = build_actions(incidents, now)
-        self._last_ai = time.monotonic()
 
     def _regroup_if_needed(self, force: bool) -> bool:
         """Время идёт: решённые критические уходят из группы, риск растёт. Пересчитываем без перечитывания."""
         if not self.loaded:
             return False
         now = self.clock.now()
-        ai_due = force or ai_layer.consume_dirty() or time.monotonic() - self._last_ai > AI_REFRESH_SECONDS
-        if not ai_due and self._last_regroup and abs((now - self._last_regroup).total_seconds()) < REGROUP_SECONDS:
+        ai_due = force or time.monotonic() - self._last_ai > AI_REFRESH_SECONDS
+        ai_dirty = not ai_due and ai_layer.consume_dirty()   # GigaChat дописал ответы — нужен только ИИ
+        if not (ai_due or ai_dirty) and self._last_regroup and abs((now - self._last_regroup).total_seconds()) < REGROUP_SECONDS:
             return False
         with self.lock:
             self._last_regroup = now
@@ -264,6 +270,10 @@ class Store:
                 self.desk.sync_alerts(self.incidents)
             if ai_due:
                 self._derive(self.incidents, now)
+                changed = True
+            elif ai_dirty:
+                self._enrich(self.incidents, now)
+                self.actions = build_actions(self.incidents, now)  # подсказки «кому передать» в очереди
                 changed = True
             if changed:
                 self.version += 1

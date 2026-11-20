@@ -232,3 +232,16 @@ def test_teams_list(make_store):
     store, _ = make_store([make("A", team="КЦ ДОИ VMWare"), make("B", team="AutoClosedMi")])
     teams = store.snapshot()["teams"]
     assert "КЦ ДОИ VMWare" in teams and COORD in teams and "AutoClosedMi" not in teams
+
+
+def test_confirm_duplicates_one_write(linked, tmp_path):
+    store, itsm, f = linked([make("M", 0, 2), make("D1", 0, 2), make("D2", 2, 2), make("X", 0, 2)])
+    itsm.confirm_duplicates("M", ["M", "D1", "D2"], "Ольга")
+    assert raw(f, "M")["isMaster"] is True and raw(f, "M")["isDouble"] is False
+    assert raw(f, "D1")["isDouble"] is True and raw(f, "D2")["isMaster"] is False
+    assert "D1" in raw(f, "M")["workLog"][-1]["text"] and raw(f, "D1")["workLog"][-1]["action"] == "duplicates"
+    assert "isDouble" not in raw(f, "X")
+    assert store.incidents["D2"]["is_double"] and store.incidents["M"]["is_master"]  # применено в памяти
+    assert len(list((tmp_path / "backups").iterdir())) == 1                          # одна запись — одна копия
+    with pytest.raises(ItsmError):
+        itsm.confirm_duplicates("M", ["NOPE"], "Ольга")

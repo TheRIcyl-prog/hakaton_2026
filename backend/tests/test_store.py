@@ -207,3 +207,16 @@ def test_snapshot_bytes_cached_per_version(make_store):
     write(f, [make("A", 0, 3)])
     store.poll()
     assert store.snapshot_bytes(True)[1] > v1
+
+
+def test_ai_dirty_reenriches_without_forecast(make_store, monkeypatch):
+    from backend.app import store as store_mod
+    store, _ = make_store([make("A", 0, 3)])
+    calls = {"forecast": 0, "enrich": 0}
+    monkeypatch.setattr(store_mod, "forecast_all", lambda *a, **k: calls.__setitem__("forecast", calls["forecast"] + 1))
+    monkeypatch.setattr(store_mod, "enrich", lambda *a, **k: calls.__setitem__("enrich", calls["enrich"] + 1))
+    monkeypatch.setattr(store_mod.ai_layer, "consume_dirty", lambda: True)
+    v = store.version
+    store._last_regroup = None
+    assert store.poll() and store.version > v
+    assert calls == {"forecast": 0, "enrich": 1}

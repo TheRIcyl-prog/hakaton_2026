@@ -131,6 +131,45 @@ class Itsm:
                 self.store.desk.remember(by)
             return rec
 
+    # ---------- «Да, это один сбой»: подтверждение группы дублей от ИИ (п. 8.4) ----------
+    def confirm_duplicates(self, master_id: str, ids: list[str], by: str) -> list[dict]:
+        """Одной записью: isMaster у мастера, isDouble у остальных + журнал у каждого."""
+        if not by or not by.strip():
+            raise ItsmError("укажите имя координатора")
+        by = by.strip()
+        doubles = [i for i in dict.fromkeys(ids) if i and i != master_id]
+        if not master_id or not doubles:
+            raise ItsmError("нужны мастер и хотя бы один дубль")
+        lock = self.store.write_lock if self.store else _write_lock
+        with lock:
+            data = self._load()
+            pos = {str(r.get("id", "")).strip(): i for i, r in enumerate(data) if isinstance(r, dict)}
+            missing = [i for i in [master_id, *doubles] if i not in pos]
+            if missing:
+                raise ItsmError(f"нет в файле: {', '.join(missing)}", 404)
+            now = self.now_fn()
+            new_data = list(data)
+            changed = []
+            for inc_id in [master_id, *doubles]:
+                rec = copy.deepcopy(data[pos[inc_id]])
+                is_master = inc_id == master_id
+                rec["isMaster"], rec["isDouble"] = is_master, not is_master
+                rec["isRootIncident"] = is_master
+                text = (f"мастер-инцидент сбоя, дубли: {', '.join(doubles)}" if is_master
+                        else f"дубль мастер-инцидента {master_id}")
+                log = rec.get("workLog") if isinstance(rec.get("workLog"), list) else []
+                log.append({"at": _fmt(now), "author": by, "action": "duplicates", "text": text})
+                rec["workLog"] = log
+                new_data[pos[inc_id]] = rec
+                changed.append(rec)
+            text_out = dumps(new_data)
+            backup(self.path, self.backup_dir, self.backups_keep)
+            _atomic_write(self.path, text_out)
+            if self.store:
+                self.store.ingest_own(new_data, text_out)
+                self.store.desk.remember(by)
+            return changed
+
     # ---------- «Взять в работу» / «Отпустить» (наше поле coordinator) ----------
     def take(self, inc_id: str, by: str, expected_hash: str | None = None, force: bool = False) -> dict:
         def mutate(rec: dict, now: datetime):

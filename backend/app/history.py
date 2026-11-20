@@ -139,11 +139,12 @@ class History:
 
     # ---------- чтение (ИИ, панель инцидента) ----------
     def get(self, inc_id: str) -> list[dict]:
-        with self.lock:
-            return [dict(c) for c in self._by_id.get(inc_id, ())]
+        """O(1) по числу инцидентов (≤ MAX_PER_INCIDENT записей). Записи только читать — это не копии."""
+        lst = self._by_id.get(inc_id)
+        return list(lst) if lst else []
 
     def changes(self, inc_id: str, since: datetime | None = None, kind: str | None = None) -> list[dict]:
-        return [c for c in self.get(inc_id)
+        return [dict(c) for c in self.get(inc_id)
                 if (not kind or c["kind"] == kind) and (not since or (parse_dt(c.get("at")) or since) >= since)]
 
     def changed_since(self, since: datetime) -> set[str]:
