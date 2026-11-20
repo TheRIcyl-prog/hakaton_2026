@@ -215,20 +215,19 @@ class Store:
         while len(self._old_versions) > OLD_VERSIONS:
             self._old_versions.popitem(last=False)
 
+        # История — до пересчёта ИИ: динамика (п. 8.5) должна видеть эту же правку, а не следующую
+        self.history.record(old if self.loaded else {}, new_incidents, changed, now)  # при первой загрузке — засев из workLog
         self.groups = assign_groups(new_incidents, self.rules, now, self.seen_resolved)
         self.refs = Refs(new_incidents, now, changed, removed, self.history)
         self._derive(new_incidents, now)
 
         if self.loaded:
-            self.history.record(old, new_incidents, changed, now)
             stamp = adapter.iso(_utcnow())
             clock_stamp = adapter.iso(now)
             for ev in diff(old, new_incidents, changed | removed):
                 self.seq += 1
                 ev.update(seq=self.seq, at=stamp, clock_at=clock_stamp)
                 self.events.append(ev)
-        else:
-            self.history.record({}, new_incidents, changed, now)  # засев истории из workLog
         self.incidents = new_incidents
         self.loaded = True
         self.desk.sync_alerts(new_incidents)

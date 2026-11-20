@@ -220,3 +220,13 @@ def test_ai_dirty_reenriches_without_forecast(make_store, monkeypatch):
     store._last_regroup = None
     assert store.poll() and store.version > v
     assert calls == {"forecast": 0, "enrich": 1}
+
+
+def test_history_recorded_before_ai_sees_the_edit(make_store, monkeypatch):
+    from backend.app import store as store_mod
+    store, f = make_store([make("A", 2, 2)])
+    seen = []
+    monkeypatch.setattr(store_mod, "enrich", lambda incs, now, rules, **k: seen.append(len(store.history.get("A"))))
+    write(f, [make("A", 2, 3)])
+    store.poll()
+    assert seen == [1]  # ИИ на этой же правке уже видит повышение приоритета
