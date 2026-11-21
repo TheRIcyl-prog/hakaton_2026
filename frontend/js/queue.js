@@ -7,7 +7,7 @@ const KINDS = {
   claim: ["Новый критический", "Взять в работу"],
   route: ["Передача", "Передать"],
   escalate: ["Эскалация", "Эскалировать"],
-  outage: ["Возможный сбой", "Да, это один сбой"],
+  outage: ["Возможный сбой", "Проверить состав"],
   dynamics: ["Динамика", "Посмотреть"],
   aftermath: ["Последствия", "Проверить последствия"],
   deadline: ["Срок", "Посмотреть"],
@@ -32,7 +32,7 @@ function renderItem(item, scope, candidate) {
   const outage = item.kind === "outage";
   const confidence = item.kind === "route" && Number.isFinite(item.confidence) ? `Уверенность ${Math.round(item.confidence * 100)}%` : "";
   const primary = outage
-    ? item.outage_id && button("confirm", title, true)
+    ? item.outage_id && button("review-outage", title, true)
     : item.incident_id && button(review || !KINDS[item.kind] ? "open" : item.kind, title, true);
   return `<article class="action${inc?.priority_level === "critical" ? " crit" : item.kind === "escalate" ? " escalate" : ""}" data-queue-id="${esc(item.id)}">
     <div class="action-head"><span>${kind}${inc?.product ? ` · ${esc(inc.product)}` : ""}</span>
@@ -54,7 +54,7 @@ function renderItem(item, scope, candidate) {
   </article>`;
 }
 
-export function mountQueue(el, { getSnapshot, open, copy, needName, toast, refreshSnapshot, tickCountdowns }) {
+export function mountQueue(el, { getSnapshot, open, copy, needName, toast, reviewOutage, refreshSnapshot, tickCountdowns }) {
   const counter = document.getElementById("queue-count");
   const list = el.querySelector("#queue-items");
   const status = el.querySelector("#queue-status");
@@ -240,8 +240,8 @@ export function mountQueue(el, { getSnapshot, open, copy, needName, toast, refre
       openAction(item);
     } else if (action === "claim") {
       apply(item, () => api.claim(item.incident_id), "Взято в работу", { domain: true });
-    } else if (action === "confirm") {
-      apply(item, () => api.confirmOutage(item.outage_id), "Сбой подтверждён", { domain: true });
+    } else if (action === "review-outage") {
+      reviewOutage(item.outage_id);
     } else if (action === "snooze" || action === "dismiss" || (action === "reviewed" && owner.reviewed.has(id))) {
       const operation = action === "snooze" ? "snooze" : "dismiss";
       apply(item, (by) => api.queuePreference(by, id, operation), operation === "snooze" ? "Отложено на 15 минут" : "Убрано из вашей очереди");

@@ -46,9 +46,13 @@ const settingsDialog = document.getElementById("card-settings");
 const cardSettings = mountCardSettings(settingsDialog, { getName: getMe, onChange: renderMain });
 const columnDialog = document.getElementById("column-settings");
 const columnSettings = mountColumnSettings(columnDialog, { getName: getMe, onChange: renderMain });
-const renderOutages = mountOutages(outagesEl, { open: openDrawer, refresh: () => refreshSnapshot(), needName, toast: R.toast });
+const { render: renderOutages, reviewCandidate } = mountOutages(outagesEl, { open: openDrawer, refresh: () => refreshSnapshot(), needName, toast: R.toast });
 const queue = mountQueue(queueEl, {
   getSnapshot: () => state.snap, open: (id, isCurrent) => openDrawer(id, undefined, isCurrent), copy, needName, toast: R.toast,
+  reviewOutage: (id) => {
+    setView("outages");
+    if (!reviewCandidate(id)) R.toast("Предложение изменилось. Выберите актуальное в списке сбоев.", "bad");
+  },
   refreshSnapshot: () => refreshSnapshot(), tickCountdowns: () => R.tickCountdowns(nowMs()),
 });
 

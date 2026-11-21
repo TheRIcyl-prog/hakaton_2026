@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Iterable
 
 from .adapter import iso, parse_dt
+from .ai.outages import MIN_PRODUCTS, WINDOW
 from .groups import finished_until
 
 
@@ -17,6 +18,7 @@ class OutageCandidate:
     link: dict
     hashes: dict[str, str]
     summary: dict
+    explicit: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,14 +103,45 @@ def _explicit_proposals(incidents: dict[str, dict]) -> Iterable[dict]:
                "reason": f"Явные ссылки causeIncidentId ведут к {root}. Связь требует подтверждения координатором."}
 
 
-def build_candidates(proposals: Iterable[dict], incidents: dict[str, dict]) -> dict[str, OutageCandidate]:
-    explicit = _build_candidates(_explicit_proposals(incidents), incidents, min_members=2, reserved=set())
+def _narrowed_proposals(raw_by_id: dict[str, dict], incidents: dict[str, dict]) -> Iterable[dict]:
+    for raw in raw_by_id.values():
+        scopes = raw.get("outageExclusions")
+        if not isinstance(scopes, list):
+            continue
+        for scope in scopes:
+            if not isinstance(scope, dict) or scope.get("candidate_remainder") is not True:
+                continue
+            ids = scope.get("incident_ids")
+            if not isinstance(ids, list) or len(ids) < 2 or not all(isinstance(i, str) and i in incidents for i in ids):
+                continue
+            members = [incidents[i] for i in ids]
+            codes = {inc["product_code"] for inc in members}
+            products = {inc["product"] for inc in members if inc["product"]}
+            if len(codes) != 1 or None in codes or len(products) < MIN_PRODUCTS:
+                continue
+            dates = [(parse_dt(inc["created_at"]), inc["id"]) for inc in members]
+            if any(at is None for at, _ in dates):
+                continue
+            dates.sort()
+            if dates[-1][0] - dates[0][0] > WINDOW:
+                continue
+            code = members[0]["product_code"]
+            yield {"master_id": dates[0][1], "ids": ids, "source": "rules", "name": f"Сбой · {code}",
+                   "reason": f"Координатор уточнил состав. У оставшихся заявок общий код {code}."}
+
+
+def build_candidates(proposals: Iterable[dict], incidents: dict[str, dict], *,
+                     raw_by_id: dict[str, dict] | None = None) -> dict[str, OutageCandidate]:
+    explicit = _build_candidates(_explicit_proposals(incidents), incidents, min_members=2, reserved=set(), explicit=True)
     reserved = {inc_id for candidate in explicit.values() for inc_id in candidate.hashes}
-    return {**explicit, **_build_candidates(proposals, incidents, min_members=3, reserved=reserved)}
+    narrowed = _build_candidates(_narrowed_proposals(raw_by_id or {}, incidents), incidents,
+                                 min_members=2, reserved=reserved)
+    reserved.update(inc_id for candidate in narrowed.values() for inc_id in candidate.hashes)
+    return {**explicit, **narrowed, **_build_candidates(proposals, incidents, min_members=3, reserved=reserved)}
 
 
 def _build_candidates(proposals: Iterable[dict], incidents: dict[str, dict], *, min_members: int,
-                      reserved: set[str]) -> dict[str, OutageCandidate]:
+                      reserved: set[str], explicit: bool = False) -> dict[str, OutageCandidate]:
     candidates = {}
     for proposal in proposals:
         master_id, ids = proposal.get("master_id"), proposal.get("ids")
@@ -129,7 +162,7 @@ def _build_candidates(proposals: Iterable[dict], incidents: dict[str, dict], *, 
         version = json.dumps([link, hashes], sort_keys=True, ensure_ascii=False)
         outage_id = "outage-" + hashlib.sha256(version.encode("utf-8")).hexdigest()[:24]
         link["id"] = outage_id
-        candidates[outage_id] = OutageCandidate(link, hashes, _summary(link, members))
+        candidates[outage_id] = OutageCandidate(link, hashes, _summary(link, members), explicit=explicit)
     return candidates
 
 

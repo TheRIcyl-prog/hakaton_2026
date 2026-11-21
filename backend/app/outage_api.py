@@ -20,6 +20,10 @@ class RemoveOutageIncidentBody(BaseModel):
     expected_incident_ids: list[str] = Field(min_length=1)
 
 
+class RemoveOutageCandidateIncidentBody(BaseModel):
+    by: str = Field(max_length=100)
+
+
 def outage_action_router(get_itsm: Callable[[], Itsm]) -> APIRouter:
     router = APIRouter()
 
@@ -35,6 +39,20 @@ def outage_action_router(get_itsm: Callable[[], Itsm]) -> APIRouter:
         try:
             return {"outage": get_itsm().remove_outage_incident(
                 outage_id, inc_id, body.by, body.expected_hash, body.expected_incident_ids)}
+        except ItsmError as e:
+            raise HTTPException(e.status, str(e)) from e
+
+    @router.get("/api/outage-candidates/{candidate_id}")
+    def outage_candidate_detail(candidate_id: str):
+        candidate = get_itsm().outage_candidate_detail(candidate_id)
+        if candidate is None:
+            raise HTTPException(404, "предложение о сбое не найдено или устарело")
+        return candidate
+
+    @router.delete("/api/outage-candidates/{candidate_id}/incidents/{inc_id}")
+    def remove_outage_candidate_incident(candidate_id: str, inc_id: str, body: RemoveOutageCandidateIncidentBody):
+        try:
+            return {"candidate": get_itsm().remove_outage_candidate_incident(candidate_id, inc_id, body.by)}
         except ItsmError as e:
             raise HTTPException(e.status, str(e)) from e
 

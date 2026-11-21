@@ -49,27 +49,27 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
   let snapshotMessage = "";
   let opening = 0;
 
-  function members(outage, detail) {
+  function members(outage, detail, candidate) {
     const ids = detail?.outage?.incident_ids || outage.incident_ids;
-    const rows = ids.map((id) => ({ id, inc: snap.incidents[id] || detail?.incidents.get(id) }));
+    const rows = ids.map((id) => ({ id, inc: detail.incidents.get(id) || snap.incidents[id] }));
     const included = new Set(ids);
     const parents = new Set(rows.map(({ inc }) => inc?.cause_incident_id).filter((id) => included.has(id)));
     return `<ul class="outage-members">${rows.map(({ id, inc }) => {
       const label = inc && [inc.product, inc.title].filter(Boolean).join(" · ");
       const cause = inc?.cause_incident_id;
       const relation = included.has(cause) ? `Следствие ${cause}` : parents.has(id) ? "Причина цепочки" : "";
-      const canExclude = detail?.incidents.has(id);
+      const canExclude = candidate || detail.incidents.has(id);
       const disabled = busy || refreshRequired ? " disabled" : "";
       return `<li${canExclude ? ' class="action-btns"' : ""}><button type="button" class="outage-member" data-incident="${esc(id)}"><b>${esc(id)}</b>
         ${label || relation ? `<span>${esc([relation, label].filter(Boolean).join(" · "))}</span>` : ""}</button>
-        ${canExclude ? `<button type="button" class="btn small" data-exclude="${esc(id)}" aria-label="Исключить ${esc(id)} из сбоя"${disabled}>Исключить</button>` : ""}</li>`;
+        ${canExclude ? `<button type="button" class="btn small" data-exclude="${esc(id)}" aria-label="Исключить ${esc(id)} ${candidate ? "из предложения" : "из сбоя"}"${disabled}>Исключить</button>` : ""}</li>`;
     }).join("")}</ul>`;
   }
 
   function card(outage, candidate) {
-    const detail = candidate ? null : details.get(outage.id);
+    const detail = details.get(outage.id);
     let composition = "";
-    if (candidate || detail?.outage) composition = members(outage, detail);
+    if (detail?.outage) composition = members(outage, detail, candidate);
     else if (detail?.error) composition = `<p class="outage-error">${esc(detail.error)}</p><button class="btn small" data-retry>Повторить</button>`;
     else if (detail) composition = `<p class="outage-description">Загружаем состав…</p>`;
     const source = SOURCES[outage.source];
@@ -123,13 +123,13 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
     }
   }
 
-  async function loadDetails(id) {
+  async function loadDetails(id, candidate) {
     if (details.has(id)) return;
     const entry = {};
     details.set(id, entry);
     paint();
     try {
-      const outage = await api.outage(id);
+      const outage = await (candidate ? api.outageCandidate(id) : api.outage(id));
       entry.incidents = new Map(outage.incidents.map((inc) => [inc.id, inc]));
       entry.outage = outage;
     } catch (e) {
@@ -225,28 +225,67 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
     if (document.activeElement === document.body) status.focus({ preventScroll: true });
   }
 
+  async function excludeCandidateMember(id, incidentId) {
+    if (busy || refreshRequired || needName()) return;
+    if (!window.confirm(`Исключить ${incidentId} из предложения? Это изменит состав для всех координаторов.`)) return;
+    busy = true;
+    status.textContent = `Исключаем ${incidentId} из предложения…`;
+    paint();
+    let replacement;
+    try {
+      ({ candidate: replacement } = await api.excludeOutageCandidateMember(id, incidentId));
+      snapshotMessage = replacement ? `${incidentId} исключён. Проверьте новый состав.`
+        : `${incidentId} исключён. Предложение больше не подходит для подтверждения.`;
+    } catch (error) {
+      if (error.status !== 409 && error.status !== 404) {
+        busy = false;
+        status.textContent = `Не удалось исключить заявку. ${error.message}`;
+        paint();
+        return;
+      }
+      details.delete(id);
+      snapshotMessage = "Предложение изменилось. Проверьте актуальный состав.";
+    }
+    await refreshSnapshot();
+    if (!replacement || !reviewCandidate(replacement.id)) status.focus({ preventScroll: true });
+  }
+
+  function reviewCandidate(id) {
+    const summary = list.querySelector(`[data-kind="candidate"][data-id="${CSS.escape(id)}"] summary`);
+    if (!summary) return false;
+    summary.parentElement.open = true;
+    summary.focus();
+    summary.scrollIntoView({ block: "nearest" });
+    return true;
+  }
+
   list.addEventListener("toggle", (event) => {
     const node = event.target;
     if (!node.open || !list.contains(node)) return;
-    const card = node.closest('[data-kind="confirmed"]');
-    if (card) loadDetails(card.dataset.id);
+    const card = node.closest("[data-kind]");
+    if (card) loadDetails(card.dataset.id, card.dataset.kind === "candidate");
   }, true);
 
   list.addEventListener("click", async (event) => {
     const button = event.target.closest("button");
     if (!button) return;
-    const id = button.closest("[data-kind]").dataset.id;
+    const { id, kind } = button.closest("[data-kind]").dataset;
+    const isCandidate = kind === "candidate";
     if (button.hasAttribute("data-confirm")) { confirmCandidate(id); return; }
-    if (button.dataset.exclude) { excludeMember(id, button.dataset.exclude); return; }
+    if (button.dataset.exclude) {
+      if (isCandidate) excludeCandidateMember(id, button.dataset.exclude);
+      else excludeMember(id, button.dataset.exclude);
+      return;
+    }
     if (button.dataset.operation) {
       actOnOutage(id, button.dataset.operation, button.closest("[data-kind]").querySelector("[data-outage-team]")?.value);
       return;
     }
-    if (button.hasAttribute("data-retry")) { details.delete(id); loadDetails(id); return; }
+    if (button.hasAttribute("data-retry")) { details.delete(id); loadDetails(id, isCandidate); return; }
     const incidentId = button.dataset.incident;
     const request = ++opening;
     try {
-      const inc = snap.incidents[incidentId] || details.get(id)?.incidents?.get(incidentId) || await api.incident(incidentId);
+      const inc = snap.incidents[incidentId] || (!isCandidate && details.get(id)?.incidents?.get(incidentId)) || await api.incident(incidentId);
       if (request === opening && !el.classList.contains("hidden")) open(incidentId, inc);
     } catch (e) {
       if (request === opening) toast(`Не удалось открыть ${incidentId}. ${e.message}`, "bad");
@@ -254,7 +293,7 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
   });
   refreshButton.onclick = refreshSnapshot;
 
-  return (next) => {
+  function render(next) {
     if (snap !== next) {
       const old = new Map((snap?.outages || []).map((outage) => [outage.id, JSON.stringify(outage.incident_ids)]));
       for (const outage of next.outages || []) {
@@ -262,11 +301,15 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
         old.delete(outage.id);
       }
       for (const id of old.keys()) details.delete(id);
+      const candidates = new Set((next.outage_candidates || []).map(({ id }) => id));
+      for (const candidate of snap?.outage_candidates || []) if (!candidates.has(candidate.id)) details.delete(candidate.id);
       snap = next;
     }
     paint();
-    for (const node of list.querySelectorAll('[data-kind="confirmed"] details[open]')) {
-      loadDetails(node.closest("[data-kind]").dataset.id);
+    for (const node of list.querySelectorAll('details[open]')) {
+      const { id, kind } = node.closest("[data-kind]").dataset;
+      loadDetails(id, kind === "candidate");
     }
-  };
+  }
+  return { render, reviewCandidate };
 }

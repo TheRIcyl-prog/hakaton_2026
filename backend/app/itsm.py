@@ -185,17 +185,7 @@ class Itsm:
             if candidate is None:
                 raise ItsmError(conflict, 409)
             data = self._load()
-            # Как в adapt_all: при повторе id используется последняя запись из файла.
-            positions = {to_str(rec.get("id")): i for i, rec in enumerate(data) if isinstance(rec, dict)}
-            for inc_id, expected_hash in candidate.hashes.items():
-                idx = positions.get(inc_id)
-                if idx is None:
-                    raise ItsmError(conflict, 409)
-                rec = data[idx]
-                if outage_link(rec.get("outage")) is not None:
-                    raise ItsmError("инцидент уже привязан к сбою — обновите снимок", 409)
-                if content_hash(rec) != expected_hash:
-                    raise ItsmError(conflict, 409)
+            positions = _check_outage_candidate(data, candidate.hashes, conflict)
 
             new_data = list(data)
             entry = {"at": _fmt(self.now_fn()), "author": by, "action": "outage_confirm",
@@ -209,6 +199,62 @@ class Itsm:
             outage = self.store.outage(candidate_id)
             assert outage is not None
             return outage
+
+    def outage_candidate_detail(self, candidate_id: str) -> dict | None:
+        if self.store is None:
+            return None
+        with self.store.lock:
+            candidate = self.store.outage_candidate(candidate_id)
+            if candidate is None:
+                return None
+            members = []
+            for inc_id in candidate.summary["incident_ids"]:
+                inc = self.store.incidents.get(inc_id)
+                if inc is None or inc["hash"] != candidate.hashes.get(inc_id):
+                    return None
+                compact = {key: inc[key] for key in ("id", "title", "product")}
+                if "cause_incident_id" in inc:
+                    compact["cause_incident_id"] = inc["cause_incident_id"]
+                members.append(compact)
+            return {**candidate.summary, "incidents": members}
+
+    def remove_outage_candidate_incident(self, candidate_id: str, inc_id: str, by: str) -> dict | None:
+        by = by.strip()
+        if not by:
+            raise ItsmError("укажите имя координатора")
+        conflict = "предложение о сбое изменилось — обновите снимок"
+        if self.store is None:
+            raise ItsmError(conflict, 409)
+        with self.store.write_lock:
+            candidate = self.store.outage_candidate(candidate_id)
+            if candidate is None or inc_id not in candidate.hashes:
+                raise ItsmError(conflict, 409)
+            data = self._load()
+            positions = _check_outage_candidate(data, candidate.hashes, conflict)
+            remaining = candidate.hashes.keys() - {inc_id}
+            idx = positions[inc_id]
+            removed = dict(data[idx])
+            scope = {"outage_id": candidate_id, "incident_ids": sorted(remaining)}
+            if not candidate.explicit and len(remaining) >= 2:
+                scope["candidate_remainder"] = True
+            exclusions = removed.get("outageExclusions")
+            removed["outageExclusions"] = [*(exclusions if isinstance(exclusions, list) else []), scope]
+            _log_outage_change(removed, _fmt(self.now_fn()), by, "outage_candidate_remove",
+                               f"Исключён из предложения о сбое {candidate_id}")
+            updated = list(data)
+            updated[idx] = removed
+            self._commit(updated, by)
+
+            for summary in self.store.snapshot()["outage_candidates"]:
+                if inc_id in summary["incident_ids"]:
+                    continue
+                if candidate.explicit:
+                    fresh = self.store.outage_candidate(summary["id"])
+                    if fresh and fresh.explicit and fresh.link["master_id"] == candidate.link["master_id"]:
+                        return summary
+                elif set(summary["incident_ids"]) == remaining:
+                    return summary
+            return None
 
     def remove_outage_incident(self, outage_id: str, inc_id: str, by: str, expected_hash: str,
                                expected_incident_ids: list[str]) -> dict | None:
@@ -455,6 +501,21 @@ class Itsm:
             backup(self.path, backup_dir, self.backups_keep)
             _atomic_write(self.path, dumps(data))
         return len(incs)
+
+
+def _check_outage_candidate(data: list, hashes: dict[str, str], conflict: str) -> dict[str | None, int]:
+    # Как в adapt_all: при повторе id используется последняя запись из файла.
+    positions = {to_str(rec.get("id")): i for i, rec in enumerate(data) if isinstance(rec, dict)}
+    for inc_id, expected_hash in hashes.items():
+        idx = positions.get(inc_id)
+        if idx is None:
+            raise ItsmError(conflict, 409)
+        rec = data[idx]
+        if outage_link(rec.get("outage")) is not None:
+            raise ItsmError("инцидент уже привязан к сбою — обновите снимок", 409)
+        if content_hash(rec) != expected_hash:
+            raise ItsmError(conflict, 409)
+    return positions
 
 
 def _log_outage_change(rec: dict, at: str, by: str, action: str, text: str) -> None:
