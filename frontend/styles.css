@@ -617,6 +617,12 @@ body.wall.no-cursor, body.wall.no-cursor * { cursor: none !important; }
 .column-settings ol { margin: 4px 0; padding: 0; list-style: none; }
 .column-settings li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 4px 0; }
 .column-settings li .btn:disabled { opacity: .45; cursor: default; }
+.status-form .status-current { margin: 4px 0; overflow-wrap: anywhere; }
+.status-fields { display: grid; gap: 5px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.status-fields label { color: var(--muted); }
+.status-reason { display: grid; gap: 5px; }
+.status-message { color: var(--muted); overflow-wrap: anywhere; }
+.status-message:empty { display: none; }
 
 /* Сбои v2 */
 .wall-outages { flex: none; min-width: 0; padding: 4px 20px 0; }

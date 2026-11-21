@@ -11,6 +11,7 @@ import { mountOutages } from "./outages.js";
 import { mountQueue } from "./queue.js";
 import { mountCardSettings } from "./card-settings.js";
 import { mountColumnSettings } from "./column-settings.js";
+import { openIncidentStatus } from "./incident-status.js";
 
 const HIGHLIGHT_MS = 15000;
 const VIEW_KEY = "mi-dashboard:view";
@@ -26,8 +27,10 @@ const state = {
   serverTotal: null,     // «всего по фильтру» по всем инцидентам (сервер)
   listMode: null,        // что показывает список поверх колонок: search | all | outside
 };
-// инцидент из снимка, иначе — подгруженный с сервера
-const getInc = (id) => (state.snap && state.snap.incidents[id]) || state.extra.get(id) || null;
+const statusResults = new Map();
+const detailRequests = new Map();
+// Результат правки показываем сразу, пока опрос догоняет запись.
+const getInc = (id) => statusResults.get(id)?.inc || state.snap?.incidents[id] || state.extra.get(id) || null;
 const ui = {
   query: "", changed: new Map(), open: (id) => openDrawer(id), predicate: null, limits: {},
   selected: null, alarmIds: new Set(), actions: new Map(),
@@ -63,6 +66,9 @@ function loadView() {
 // ---------- данные ----------
 const refreshSnapshot = startPolling(
   (snap) => {
+    const open = state.openId && getInc(state.openId);
+    if (open && !snap.incidents[open.id]) state.extra.set(open.id, open);
+    for (const [id, result] of statusResults) if (!result.awaiting) statusResults.delete(id);
     state.snap = snap;
     state.offsetMs = Date.parse(snap.now) - Date.now();
     if (state.feedSeenSeq === null || snap.last_event_seq < state.feedSeenSeq) state.feedSeenSeq = snap.last_event_seq;
@@ -142,18 +148,23 @@ function onServerChange() {
 
 // Полная запись инцидента + история изменений: для инцидентов вне снимка и для «Истории» в панели
 async function fetchExtra(id) {
+  if (statusResults.has(id)) return;
+  const request = {};
+  detailRequests.set(id, request);
   try {
     const inc = await api.incident(id);
+    if (detailRequests.get(id) !== request) return;
     state.history.set(id, { hash: inc.hash, list: inc.history || [] });
     if (!state.snap || !state.snap.incidents[id]) state.extra.set(id, inc);
     if (state.openId === id) paintPanel();
   } catch { /* удалён из файла — панель покажет последнее, что было */ }
+  finally { if (detailRequests.get(id) === request) detailRequests.delete(id); }
 }
 
 function paintPanel() {
   const inc = state.openId ? getInc(state.openId) : null;
   const h = inc ? state.history.get(inc.id) : null;
-  if (inc && (!h || h.hash !== inc.hash) && !h?.loading) {
+  if (inc && !statusResults.has(inc.id) && (!h || h.hash !== inc.hash) && !h?.loading) {
     state.history.set(inc.id, { ...(h || {}), loading: true, hash: h ? h.hash : null });
     fetchExtra(inc.id);
   }
@@ -322,6 +333,42 @@ function doEscalate(id, draft) {
   if (inc) openEscalate(inc, draft, { copy, onDone: (t) => R.toast(`✔ ${t}`) });
 }
 
+async function syncStatus(inc) {
+  const entry = { inc, awaiting: true };
+  statusResults.set(inc.id, entry);
+  detailRequests.delete(inc.id);
+  state.extra.set(inc.id, inc);
+  if (Array.isArray(inc.history)) state.history.set(inc.id, { hash: inc.hash, list: inc.history });
+  else state.history.delete(inc.id);
+  if (state.openId === inc.id) paintPanel();
+  const refreshed = await refreshSnapshot();
+  if (statusResults.get(inc.id) === entry) {
+    entry.awaiting = false;
+    if (refreshed) statusResults.delete(inc.id);
+    if (state.openId === inc.id) paintPanel();
+  }
+  return refreshed;
+}
+
+function doChangeStatus(inc) {
+  if (needName()) return;
+  openIncidentStatus(inc, {
+    loadMeta: async () => (state.meta ||= await api.meta()),
+    submit: (record, id, comment, reason) => api.state(record.id, id, comment, reason, record.hash),
+    reload: async (id) => {
+      let fresh;
+      try { fresh = await api.incident(id); }
+      catch (error) { await refreshSnapshot(); throw error; }
+      await syncStatus(fresh);
+      return getInc(id) || fresh;
+    },
+    onSaved: async (updated) => {
+      R.toast(`Статус изменён: ${updated.state}`);
+      if (!await syncStatus(updated)) R.toast("Статус сохранён. Обновление снимка будет повторено.", "bad");
+    },
+  });
+}
+
 const drawerHandlers = {
   close: () => openDrawer(null),
   copy,
@@ -335,6 +382,7 @@ const drawerHandlers = {
     act(() => api.confirmDups(d.master_id, d.ids), `Записано: один сбой, ${d.size || d.ids.length} заявок`);
   },
   transfer: doTransfer,
+  changeStatus: doChangeStatus,
   escalate: doEscalate,
   comment: (id, text) => act(() => api.comment(id, text), "Комментарий добавлен"),
 };

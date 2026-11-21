@@ -306,7 +306,7 @@ comment, escalated,` ⚑ `taken, released`. При старте сервера �
 | ⚑ `POST /api/incidents/{id}/claim` | `{by, expected_hash?, force?}` | «Взять в работу»: `coordinator` в файл + журнал; тревога снята у всех. Уже у другого → `409 {"detail", "coordinator"}`; `force: true` — забрать себе. Решённый → 400 |
 | ⚑ `DELETE /api/incidents/{id}/claim?by=Имя&expected_hash=…` | — | «Отпустить»: снять `coordinator` + журнал |
 | `POST /api/itsm/{id}/assign` | `{team, assignee?, comment?, by, expected_hash?}` | передать в команду (Выполняется → Назначен); ⚑ снимает `coordinator` |
-| `POST /api/itsm/{id}/state` | `{state_id, reason?, comment?, by, expected_hash?}` | смена статуса по `transitions` |
+| `POST /api/itsm/{id}/state` | `{state_id, reason?, comment?, by, expected_hash?}` | смена статуса по `transitions` из АРМ или мини-ITSM, АРМ передаёт `expected_hash` |
 | `POST /api/itsm/{id}/priority` | `{priority_id, recalc_deadline?, comment?, by, expected_hash?}` | приоритет (+ срок по SLA) |
 | `POST /api/itsm/{id}/deadline` | `{deadline (ISO UTC), comment?, by, expected_hash?}` | срок |
 | ⚑ `POST /api/duplicates/confirm` | `{master_id, ids, by}` | «Да, это один сбой»: `isMaster` у мастера, `isDouble` у остальных + журнал (`action: duplicates`), одной записью. Ответ `{ok, incidents: [Incident…]}` |

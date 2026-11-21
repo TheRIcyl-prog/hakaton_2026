@@ -167,7 +167,8 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
         : alert || !active ? "" : `<button class="btn small btn-take" data-act="claim">Взять в работу</button>`}
       ${canTransfer ? `<button class="btn small btn-primary" data-act="transfer">Передать</button>` : ""}
       ${active ? `<button class="btn small" data-act="escalate">Эскалировать</button>` : ""}
-      <a class="btn small" href="${esc(inc.itsm_url || "#")}" target="_blank" rel="noopener" title="Статус, приоритет и срок меняются в ITSM">Открыть в ITSM ↗</a>
+      ${inc.state_kind !== "closed" ? `<button type="button" class="btn small" data-act="change-status" aria-haspopup="dialog">Изменить статус</button>` : ""}
+      <a class="btn small" href="${esc(inc.itsm_url || "#")}" target="_blank" rel="noopener" title="Приоритет и срок можно изменить в ITSM">Открыть в ITSM ↗</a>
     </div>
     <form class="comment-form" data-act="comment"><input name="text" placeholder="Комментарий в журнал работ…" autocomplete="off"><button class="btn small">Добавить</button></form>
 
@@ -205,6 +206,7 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
   on("[data-act=release]", () => handlers.release(inc.id));
   on("[data-act=transfer]", () => handlers.transfer(inc.id));
   on("[data-act=escalate]", () => handlers.escalate(inc.id, action && action.kind === "escalate" ? action.draft : null));
+  on("[data-act=change-status]", () => handlers.changeStatus(inc));
   on("[data-act=copy]", (e) => handlers.copy(action.draft, e.target));
   on("[data-act=copy-id]", (e) => handlers.copy(inc.id, e.target));
   on("[data-act=confirm-dups]", () => handlers.confirmDups(inc));

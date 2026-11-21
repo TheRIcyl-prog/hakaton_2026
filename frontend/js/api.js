@@ -74,7 +74,7 @@ export const api = {
   release: (id) => send("DELETE", `/api/incidents/${encodeURIComponent(id)}/claim?by=${encodeURIComponent(getMe())}`),
   // expected_hash: инцидент изменился, пока координатор смотрел → 409 {conflict, changes}, правка не сохраняется
   assign: (id, team, comment, assignee, hash) => send("POST", `/api/itsm/${encodeURIComponent(id)}/assign`, { team, comment, assignee, by: getMe(), expected_hash: hash || undefined }),
-  state: (id, state_id, comment, reason) => send("POST", `/api/itsm/${encodeURIComponent(id)}/state`, { state_id, comment, reason, by: getMe() }),
+  state: (id, state_id, comment, reason, expected_hash) => send("POST", `/api/itsm/${encodeURIComponent(id)}/state`, { state_id, comment, reason, expected_hash, by: getMe() }),
   priority: (id, priority_id, recalc_deadline, comment) => send("POST", `/api/itsm/${encodeURIComponent(id)}/priority`, { priority_id, recalc_deadline, comment, by: getMe() }),
   deadline: (id, deadline, comment) => send("POST", `/api/itsm/${encodeURIComponent(id)}/deadline`, { deadline, comment, by: getMe() }),
   comment: (id, text) => send("POST", `/api/itsm/${encodeURIComponent(id)}/comment`, { text, by: getMe() }),

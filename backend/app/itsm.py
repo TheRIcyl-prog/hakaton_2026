@@ -410,7 +410,7 @@ class Itsm:
             raise ItsmError("неизвестный статус")
 
         def mutate(rec: dict, now: datetime):
-            cur = _int(rec.get("stateId"))
+            cur = resolve_state_id(rec, self.rules)
             allowed = self.rules.transitions.get(cur, [])
             if state_id not in allowed:
                 names = ", ".join(self.rules.states[s]["name"] for s in allowed) or "никуда (финальный статус)"
