@@ -10,6 +10,7 @@ import { renderPanel } from "./panel.js";
 import { mountOutages } from "./outages.js";
 import { mountQueue } from "./queue.js";
 import { mountCardSettings } from "./card-settings.js";
+import { mountColumnSettings } from "./column-settings.js";
 
 const HIGHLIGHT_MS = 15000;
 const VIEW_KEY = "mi-dashboard:view";
@@ -43,6 +44,8 @@ const outagesEl = document.getElementById("outages");
 const queueEl = document.getElementById("queue");
 const settingsDialog = document.getElementById("card-settings");
 const cardSettings = mountCardSettings(settingsDialog, { getName: getMe, onChange: renderMain });
+const columnDialog = document.getElementById("column-settings");
+const columnSettings = mountColumnSettings(columnDialog, { getName: getMe, onChange: renderMain });
 const renderOutages = mountOutages(outagesEl, { open: openDrawer, refresh: () => refreshSnapshot(), needName, toast: R.toast });
 const queue = mountQueue(queueEl, {
   getSnapshot: () => state.snap, open: (id, isCurrent) => openDrawer(id, undefined, isCurrent), copy, needName, toast: R.toast,
@@ -83,7 +86,7 @@ const refreshSnapshot = startPolling(
 window.addEventListener("storage", () => {
   if (!state.snap) return;
   queue.syncBy();
-  if (ui.cardFields !== cardSettings.fields()) renderMain();
+  if (ui.cardFields !== cardSettings.fields() || ui.columns !== columnSettings.settings(state.snap.groups)) renderMain();
 });
 
 F.mountFilters(filtersEl, {
@@ -109,6 +112,7 @@ function openList(mode) {
 
 let totalReq = 0;
 async function updateServerTotal() {
+  if (state.view === "mine") return;
   if (!F.isActiveFilter()) { state.serverTotal = null; return; }
   const id = ++totalReq;
   try {
@@ -174,6 +178,7 @@ function renderMain() {
   if (!snap) return;
   const now = nowMs();
   ui.cardFields = cardSettings.fields();
+  ui.columns = columnSettings.settings(snap.groups);
   ui.predicate = F.makePredicate(snap, now, getMe());
   ui.selected = state.openId;
   ui.alarmIds = new Set(state.alerts.map((a) => a.incident_id));
@@ -185,22 +190,24 @@ function renderMain() {
   const shownUniq = ui.predicate
     ? new Set(snap.groups.flatMap((g) => g.ids).filter(matchesAll)).size
     : total;
-  F.renderFilters(filtersEl, snap, shownUniq, total, state.serverTotal);
   S.paint(now, state.openId);
 
   const mineEl = document.getElementById("mine");
   const feedEl = document.getElementById("feedview");
   renderOutages(snap);
   if (state.view === "feed") { state.feedSeenSeq = snap.last_event_seq; R.renderFeedList(snap, feedEl, openDrawer); }
-  const mineN = state.view === "mine" ? R.renderMine(snap, mineEl, getMe(), now, ui)
-    : Object.values(snap.incidents).filter((i) => getMe() && i.coordinator && i.coordinator.name === getMe() && i.state_kind === "active").length;
+  const mine = state.view === "mine" ? R.renderMine(snap, mineEl, getMe(), now, ui) : null;
+  F.renderFilters(filtersEl, snap, shownUniq, total, state.serverTotal);
+  if (mine) filtersEl.querySelector(".fl-count").textContent = `Мои · ${mine.shown} из ${mine.total}`;
+  const mineN = mine?.total
+    ?? Object.values(snap.incidents).filter((i) => getMe() && i.coordinator && i.coordinator.name === getMe() && i.state_kind === "active").length;
   document.getElementById("mine-count").textContent = mineN ? String(mineN) : "";
   document.getElementById("board").classList.toggle("hidden", state.view !== "board");
   queueEl.classList.toggle("hidden", state.view !== "queue");
   outagesEl.classList.toggle("hidden", state.view !== "outages");
   mineEl.classList.toggle("hidden", state.view !== "mine");
   feedEl.classList.toggle("hidden", state.view !== "feed");
-  filtersEl.classList.toggle("hidden", state.view !== "board");
+  filtersEl.classList.toggle("hidden", state.view !== "board" && state.view !== "mine");
   document.querySelectorAll(".tab[data-view]").forEach((t) => t.classList.toggle("active", t.dataset.view === state.view));
 
   const unseen = Math.max(0, snap.last_event_seq - (state.feedSeenSeq ?? snap.last_event_seq));
@@ -343,7 +350,7 @@ async function openDrawer(id, inc, isCurrent) {
   state.openId = id && getInc(id) ? id : null;
   paintPanel();
   ui.selected = state.openId;
-  document.querySelectorAll("#board .card").forEach((c) => c.classList.toggle("selected", c.dataset.id === state.openId));
+  document.querySelectorAll(".arm .board .card").forEach((c) => c.classList.toggle("selected", c.dataset.id === state.openId));
   if (state.view === "board" && state.snap) R.renderBoard(state.snap, nowMs(), ui);
   S.paint(nowMs(), state.openId);
   return !!state.openId;
@@ -354,12 +361,17 @@ function setView(v) {
   try { localStorage.setItem(VIEW_KEY, v); } catch { /* приватный режим */ }
   renderMain();
   if (v === "queue" && state.snap) queue.refresh();
+  if (v === "board" && state.snap) updateServerTotal();
 }
 
 function jumpTo(key) {
   if (state.view !== "board") setView("board");
   const col = document.getElementById(`col-${key}`);
   if (!col) return;
+  if (col.classList.contains("hidden")) {
+    if (F.isActiveFilter()) filtersEl.querySelector("[data-act=reset]").focus();
+    return;
+  }
   col.scrollIntoView({ behavior: "smooth", inline: "nearest", block: "nearest" });
   col.classList.add("pulse-col");
   setTimeout(() => col.classList.remove("pulse-col"), 900);
@@ -401,6 +413,8 @@ menuPop.onclick = (e) => e.stopPropagation();
 document.addEventListener("click", () => setMenu(false));
 document.getElementById("card-settings-btn").onclick = () => { setMenu(false); cardSettings.open(); };
 settingsDialog.addEventListener("close", () => menuBtn.focus());
+document.getElementById("column-settings-btn").onclick = () => { setMenu(false); columnSettings.open(); };
+columnDialog.addEventListener("close", () => menuBtn.focus());
 document.querySelectorAll(".tab[data-view]").forEach((t) => (t.onclick = () => setView(t.dataset.view)));
 
 // ---------- начало смены ----------
@@ -463,7 +477,7 @@ search.oninput = () => {
 
 // Горячие клавиши: В — взять в работу открытый инцидент (или верхнюю тревогу), Esc — закрыть, / — поиск
 document.addEventListener("keydown", (e) => {
-  if (settingsDialog.open) return;
+  if (settingsDialog.open || columnDialog.open) return;
   if (e.key === "Escape" && !menuPop.classList.contains("hidden")) {
     setMenu(false);
     menuBtn.focus();

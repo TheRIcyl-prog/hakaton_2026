@@ -26,6 +26,7 @@
         <div class="popover menu-pop hidden" id="menu-pop">
           <a href="/wall" target="_blank">🖥 Открыть видеостену</a>
           <button type="button" id="card-settings-btn" aria-haspopup="dialog">Поля карточек</button>
+          <button type="button" id="column-settings-btn" aria-haspopup="dialog">Колонки АРМ</button>
           <button id="export-btn">⭳ Экспорт файла инцидентов</button>
           <button id="import-btn">⭱ Импорт файла инцидентов</button>
           <input type="file" id="import-input" accept=".json,application/json" hidden>
@@ -64,7 +65,7 @@
       </div>
       <div id="outage-list"></div>
     </section>
-    <section class="queue hidden" id="mine"></section>
+    <section class="board hidden" id="mine" aria-label="Мои инциденты"></section>
     <section class="feedview hidden" id="feedview"></section>
     <section class="results hidden" id="results"></section>
     <aside class="panel hidden" id="drawer"></aside>
@@ -78,6 +79,19 @@
     <fieldset><legend>Дополнительные поля</legend><div id="card-settings-fields"></div></fieldset>
     <div class="modal-btns">
       <button type="button" class="btn" id="card-settings-reset">По умолчанию</button>
+      <form method="dialog"><button class="btn btn-primary">Готово</button></form>
+    </div>
+  </dialog>
+  <dialog class="card-settings column-settings" id="column-settings" aria-labelledby="column-settings-title">
+    <h2 id="column-settings-title">Колонки АРМ</h2>
+    <p id="column-settings-profile"></p>
+    <label><input type="checkbox" id="collapse-empty" checked> Сворачивать пустые</label>
+    <fieldset>
+      <legend>Порядок групп в АРМ</legend>
+      <ol id="column-order"></ol>
+    </fieldset>
+    <div class="modal-btns">
+      <button type="button" class="btn" id="column-order-reset">Сбросить порядок</button>
       <form method="dialog"><button class="btn btn-primary">Готово</button></form>
     </div>
   </dialog>

@@ -4,6 +4,7 @@
 import { esc, fmtDateTime, fmtTime, fmtLeft, fmtTimer, fmtWhen, plural, shortId } from "./format.js";
 import { isDup } from "./filters.js";
 import { incidentLabels } from "./incident-labels.js";
+import { orderGroups } from "./column-settings.js";
 
 const GROUP_SHORT = { critical: "критические", coordinators: "на координаторах", high: "высокий", research: "исследование" };
 const COUNTER_LABEL = {
@@ -120,7 +121,7 @@ export function renderAlertLine(alerts, handlers) {
 }
 
 // ---------- колонки ----------
-const cardCache = new Map(); // `${group}:${id}` -> {sig, el}
+const boardCaches = new WeakMap();
 
 function matches(inc, q) {
   if (!q) return true;
@@ -173,16 +174,28 @@ function fillOutageRow(el, row) {
 }
 
 // ui: {query, changed, wall, open, predicate, limits, more, selected, alarmIds, actions, act}
-export function renderBoard(snap, nowMs, ui) {
-  const board = $("#board");
+export function renderBoard(snap, nowMs, ui, board = $("#board")) {
+  if (!boardCaches.has(board)) boardCaches.set(board, new Map());
+  const cardCache = boardCaches.get(board);
+  const ordered = ui.wall ? snap.groups : orderGroups(snap.groups, ui.columns.order);
   if (!board.children.length || board.dataset.groups !== snap.groups.map((g) => g.key).join(",")) {
     board.dataset.groups = snap.groups.map((g) => g.key).join(",");
     board.innerHTML = snap.groups.map((g) => `
-      <section class="column" data-key="${g.key}" id="col-${g.key}">
+      <section class="column" data-key="${esc(g.key)}" id="${board.id === "mine" ? "mine-col-" : "col-"}${esc(g.key)}">
         <div class="column-head"><h2>${esc(g.title)}</h2><span class="count"></span></div>
         <div class="column-body"></div>
         <div class="column-more hidden"></div>
-      </section>`).join("");
+      </section>`).join("") + (ui.wall ? "" : '<p class="board-empty hidden" role="status"></p>');
+  }
+  const empty = ui.wall ? null : board.querySelector(".board-empty");
+  if (empty) {
+    const columns = new Map([...board.querySelectorAll(".column")].map((col) => [col.dataset.key, col]));
+    const focused = document.activeElement;
+    ordered.forEach((g, i) => {
+      const col = columns.get(g.key);
+      if (board.children[i] !== col) board.insertBefore(col, board.children[i]);
+    });
+    if (board.contains(focused) && document.activeElement !== focused) focused.focus({ preventScroll: true });
   }
   const alive = new Set();
   const filtering = !!(ui.query || ui.predicate);
@@ -190,6 +203,7 @@ export function renderBoard(snap, nowMs, ui) {
   const outages = new Map();
   const overlappingDuplicates = new Set();
   let shown = 0;
+  let visibleColumns = 0;
   if (ui.wall) {
     for (const outage of snap.outages || []) {
       for (const id of outage.incident_ids) outages.set(id, outage);
@@ -208,12 +222,17 @@ export function renderBoard(snap, nowMs, ui) {
     board.style.gridTemplateColumns = snap.groups.map((g) => g.key === "critical" ? (hasCrit ? "minmax(0, 2fr)" : "minmax(0, .75fr)") : "minmax(0, 1fr)").join(" ");
     board.classList.toggle("no-critical", !hasCrit);
   }
-  for (const g of snap.groups) {
-    const col = board.querySelector(`.column[data-key="${g.key}"]`);
+  for (const g of ordered) {
+    const col = board.querySelector(`.column[data-key="${CSS.escape(g.key)}"]`);
     const body = col.querySelector(".column-body");
     const more = col.querySelector(".column-more");
     const ids = g.ids.filter((id) => matches(snap.incidents[id], ui.query) && (!ui.predicate || ui.predicate(snap.incidents[id])));
     shown += ids.length;
+    if (!ui.wall) {
+      const hidden = !ids.length && (ui.columns.collapse || g.key === "outside");
+      col.classList.toggle("hidden", hidden);
+      if (!hidden) visibleColumns++;
+    }
     const cnt = col.querySelector(".count");
     const n = snap.counts[g.key] ?? g.count;
     const f = failures(snap, g);
@@ -285,6 +304,13 @@ export function renderBoard(snap, nowMs, ui) {
   }
   for (const k of [...cardCache.keys()]) if (!alive.has(k)) cardCache.delete(k);
   if (ui.wall) fitColumns();
+  else {
+    const message = ui.emptyText || (filtering ? "Нет инцидентов по фильтрам. Измените или сбросьте фильтры." : "В группах пока нет инцидентов.");
+    if (empty.textContent !== message) empty.textContent = message;
+    empty.classList.toggle("hidden", shown > 0);
+    board.classList.toggle("board-no-results", shown === 0);
+    board.style.setProperty("--visible-columns", Math.max(1, visibleColumns));
+  }
   return shown;
 }
 
@@ -538,34 +564,25 @@ export function renderFeedList(snap, el, onOpen) {
   el.querySelectorAll(".feed-item").forEach((i) => (i.onclick = () => onOpen(i.dataset.id)));
 }
 
-// ---------- вкладка «Мои»: инциденты в работе у меня ----------
+// «Мои»: одна карточка на инцидент в первой подходящей группе из снимка.
 export function renderMine(snap, el, me, nowMs, ui) {
-  const incs = Object.values(snap.incidents).filter((inc) => me && ownerOf(inc, snap) && ownerOf(inc, snap).by === me);
-  incs.sort((x, y) => (x.state_kind === "active" ? 0 : 1) - (y.state_kind === "active" ? 0 : 1)
-    || (Date.parse(x.deadline || "2999-01-01") - Date.parse(y.deadline || "2999-01-01")));
-  if (!me) { el.innerHTML = `<div class="actions-empty">Представьтесь — тогда здесь будут инциденты, которые вы взяли в работу</div>`; return 0; }
-  if (!incs.length) { el.innerHTML = `<div class="actions-empty">Вы пока ничего не взяли в работу. «Взять в работу» — на карточке, в панели или клавиша В</div>`; return 0; }
-  const existing = new Map([...el.querySelectorAll(".arm-card")].map((node) => [node.dataset.id, node]));
-  el.querySelector(".actions-empty")?.remove();
-  incs.forEach((inc, i) => {
-    const card = existing.get(inc.id) || document.createElement("article");
-    existing.delete(inc.id);
-    card.dataset.id = inc.id;
-    const group = inc.groups.find((g) => !inc.resolved_in.includes(g)) || inc.groups[0] || "";
-    const action = ui.actions ? ui.actions.get(inc.id) : null;
-    const changed = ui.changed.get(inc.id);
-    const claim = ownerOf(inc, snap);
-    const sig = armCardSignature(inc, ui, changed, claim, action);
-    if (card.dataset.renderKey !== sig) {
-      fillCardArm(card, inc, group, nowMs, changed, claim, action, ui);
-      card.dataset.renderKey = sig;
-    }
-    card.classList.toggle("selected", ui.selected === inc.id);
-    card.onclick = () => ui.open(inc.id);
-    if (el.children[i] !== card) el.insertBefore(card, el.children[i] || null);
-  });
-  for (const card of existing.values()) card.remove();
-  return incs.length;
+  const incs = Object.values(snap.incidents).filter((inc) => me && ownerOf(inc, snap)?.by === me);
+  incs.sort((a, b) => (a.state_kind === "active" ? 0 : 1) - (b.state_kind === "active" ? 0 : 1)
+    || (Date.parse(a.deadline || "2999-01-01") - Date.parse(b.deadline || "2999-01-01")));
+  const groups = snap.groups.map((group) => ({ ...group, ids: [] }));
+  const byKey = new Map(groups.map((group) => [group.key, group]));
+  const outside = { key: "outside", title: "Вне групп", ids: [] };
+  for (const inc of incs) {
+    const keys = inc.groups.filter((key) => byKey.has(key));
+    const primary = keys.find((key) => !inc.resolved_in.includes(key)) || keys[0];
+    (byKey.get(primary) || outside).ids.push(inc.id);
+  }
+  groups.push(outside);
+  const counts = Object.fromEntries(groups.map((group) => [group.key, group.ids.length]));
+  const emptyText = !me ? "Представьтесь, чтобы увидеть инциденты в вашей работе."
+    : !incs.length ? "У вас пока нет инцидентов в работе." : undefined;
+  const shown = renderBoard({ ...snap, groups, counts }, nowMs, { ...ui, emptyText }, el);
+  return { total: incs.length, shown };
 }
 
 export function toast(text, kind = "") {

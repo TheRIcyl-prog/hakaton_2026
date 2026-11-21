@@ -394,7 +394,9 @@ body.wall.no-cursor, body.wall.no-cursor * { cursor: none !important; }
 /* рабочая область: 4 колонки на всю высоту + панель инцидента справа */
 .workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
 .workspace.with-panel { grid-template-columns: minmax(0, 1fr) clamp(360px, 30vw, 500px); }
-.arm .board { grid-template-columns: repeat(4, minmax(230px, 1fr)); gap: 10px; padding: 10px 14px; overflow-x: auto; }
+.arm .board { grid-template-columns: repeat(var(--visible-columns, 4), minmax(0, 1fr)); gap: 10px; padding: 10px 14px; overflow-x: auto; }
+.arm .board-no-results { grid-template-rows: auto minmax(0, 1fr); }
+.arm .board-empty { grid-column: 1 / -1; grid-row: 1; margin: 0; padding: 14px; color: var(--muted); background: var(--panel); border-radius: 8px; }
 .arm .column-head { padding: 8px 12px; }
 .arm .column-head .count small { font-size: 12px; color: var(--muted); font-weight: 500; }
 .arm .column-body { padding: 8px; gap: 6px; }
@@ -612,6 +614,9 @@ body.wall.no-cursor, body.wall.no-cursor * { cursor: none !important; }
 .card-settings fieldset { min-width: 0; margin: 12px 0 0; border: 1px solid var(--line); border-radius: 6px; }
 .card-settings label { display: flex; gap: 8px; align-items: center; padding: 3px 0; cursor: pointer; }
 .card-settings form { margin: 0; }
+.column-settings ol { margin: 4px 0; padding: 0; list-style: none; }
+.column-settings li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 4px 0; }
+.column-settings li .btn:disabled { opacity: .45; cursor: default; }
 
 /* Сбои v2 */
 .wall-outages { flex: none; min-width: 0; padding: 4px 20px 0; }
