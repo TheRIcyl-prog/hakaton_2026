@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from math import ceil
 
 from .index import Index
-from .llm import LLMWorker, Task, build_outage_prompt, outage_key
+from .llm import LLMWorker, Task, build_outage_prompt, model_key, outage_key
 from .text import clip, minutes_text, plural
 
 WINDOW = timedelta(minutes=15)
@@ -79,6 +79,7 @@ def refine(candidates: list[dict], incidents: dict[str, dict], index: Index,
     refined = []
     tasks = []
     review_count = 0
+    model = getattr(worker, "advanced_model", None) or getattr(worker, "base_model", None)
     for candidate in candidates:
         ids = candidate["ids"]
         # Группу целиком оставляем правилам, если модель увидела бы только её часть.
@@ -89,13 +90,13 @@ def refine(candidates: list[dict], incidents: dict[str, dict], index: Index,
         review_count += 1
         members = [incidents[inc_id] for inc_id in ids]
         code = members[0]["product_code"]
-        key = outage_key(code, members)
+        key = model_key(outage_key(code, members), model)
         found = worker.lookup(key)
         if found is None:
             if review_count <= MAX_LLM_GROUPS and not worker.known(key):
                 tasks.append(Task(key=f"outage:{key}", priority=LLM_PRIORITY,
                                   prompt=build_outage_prompt(code, members), parts={"outage": key},
-                                  kind="outage", meta={"ids": ids}))
+                                  kind="outage", meta={"ids": ids}, advanced=True))
             refined.append(candidate)
             continue
 

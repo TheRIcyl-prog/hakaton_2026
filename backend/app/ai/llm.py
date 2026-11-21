@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from ..adapter import iso
+from .gigachat import GigaChatModelUnavailable
 from .text import SUMMARY_MAX, clip, scrub
 
 log = logging.getLogger("dashboard.ai")
@@ -74,6 +75,10 @@ def summary_key(fields: dict) -> str:
 
 def route_key(fields: dict, cands: list[dict]) -> str:
     return _h("route", text_key(fields), [c["team"] for c in cands])
+
+
+def model_key(key: str, model: str | None) -> str:
+    return _h("model", model, key) if model and model != "GigaChat" else key
 
 
 def risk_key(fields: dict, risk: dict) -> str:
@@ -238,6 +243,7 @@ class Task:
     kind: str = "incident"      # incident | dup | outage
     meta: dict = field(default_factory=dict)
     seq: int = 0
+    advanced: bool = False
 
 
 def _real_now() -> str:
@@ -245,8 +251,12 @@ def _real_now() -> str:
 
 
 class LLMWorker:
-    def __init__(self, client, cache_file, concurrency: int = 1, rpm: int = 20, retry_seconds: float = RETRY_SECONDS):
+    def __init__(self, client, cache_file, concurrency: int = 1, rpm: int = 20, retry_seconds: float = RETRY_SECONDS,
+                 advanced_model: str | None = None):
         self.client = client
+        self.base_model = getattr(client, "model", "GigaChat")
+        self.advanced_model = advanced_model if advanced_model != self.base_model else None
+        self._advanced_unavailable = False
         self.cache_file = cache_file
         self.rpm = max(1, rpm)
         self.retry_seconds = retry_seconds
@@ -282,7 +292,8 @@ class LLMWorker:
         with self.cv:
             if not self._unsaved or (not force and time.monotonic() - self._saved_at < SAVE_EVERY):
                 return
-            snapshot = json.dumps(self.cache, ensure_ascii=False)
+            # Ответы базовой модели на расширенные запросы живут до перезапуска.
+            snapshot = json.dumps({k: v for k, v in self.cache.items() if not v.get("fallback")}, ensure_ascii=False)
             self._unsaved = False
             self._saved_at = time.monotonic()
         try:
@@ -367,9 +378,19 @@ class LLMWorker:
     def _run(self) -> None:
         while True:
             t = self._take()
+            model = self.advanced_model if t.advanced and not self._advanced_unavailable else None
+            messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": t.prompt}]
             try:
-                text = self.client.chat([{"role": "system", "content": SYSTEM}, {"role": "user", "content": t.prompt}])
+                text = self.client.chat(messages, model=model) if model else self.client.chat(messages)
             except Exception as e:  # noqa: BLE001 — сеть/лимит/TLS: ждём и повторяем, сервер не роняем
+                if model and isinstance(e, GigaChatModelUnavailable):
+                    with self.cv:
+                        self._advanced_unavailable = True
+                        self.in_flight.discard(t.key)
+                        self.wanted.setdefault(t.key, t)  # Повтор проходит через общий лимит запросов.
+                        self.cv.notify_all()
+                    log.info("%s. Запросы перейдут на базовую модель до перезапуска", e)
+                    continue
                 limited = getattr(e, "rate_limited", False)
                 log.warning("GigaChat %s: %s", "лимит" if limited else "недоступен", e)
                 with self.cv:
@@ -407,6 +428,8 @@ class LLMWorker:
                 else:
                     for name, k in t.parts.items():
                         self.cache[k] = {"v": results.get(name), "at": at}
+                        if t.advanced and self.advanced_model and not model:
+                            self.cache[k]["fallback"] = True
                         self.from_disk.discard(k)
                     self._unsaved = True
                     self.dirty = True

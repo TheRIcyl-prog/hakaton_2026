@@ -23,7 +23,7 @@ from . import index as index_mod
 from . import outages as outage_mod
 from . import rules as rule_ai
 from .llm import (LLMWorker, Task, build_dup_prompt, build_incident_prompt, dup_key, dynamics_key, incident_fields,
-                  risk_key, route_key, summary_key)
+                  model_key, risk_key, route_key, summary_key)
 
 log = logging.getLogger("dashboard.ai")
 
@@ -32,6 +32,7 @@ DYNAMICS_PRIORITY = 3
 RISK_EXPLAIN_TOP = 20
 ROUTE_VIABLE_SHARE = 0.2   # кандидат для GigaChat — не меньше 20% похожих от лидера
 COMPACT_DUP = ("group_id", "master_id", "is_master", "size", "name", "confirmed", "kind")
+ADVANCED_PARTS = ("route", "risk")
 
 _worker: LLMWorker | None = None
 _history = dyn_mod.History(None)
@@ -55,7 +56,7 @@ def setup() -> None:
             os.getenv("GIGACHAT_CREDENTIALS", ""),
             os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS"),
             ca_path,
-            os.getenv("GIGACHAT_MODEL", "GigaChat"),
+            os.getenv("GIGACHAT_MODEL", "").strip() or "GigaChat",
             timeout=float(os.getenv("GIGACHAT_TIMEOUT", "30")),
         )
     except GigaChatError as e:
@@ -66,7 +67,8 @@ def setup() -> None:
         log.warning("Нет %s — TLS к GigaChat может не пройти", ca_path)
     _worker = LLMWorker(client, ROOT / "cache" / "ai_cache.json",
                         concurrency=int(os.getenv("GIGACHAT_CONCURRENCY", "1")),
-                        rpm=int(os.getenv("GIGACHAT_RPM", "20")))
+                        rpm=int(os.getenv("GIGACHAT_RPM", "20")),
+                        advanced_model=os.getenv("GIGACHAT_MODEL_ADVANCED", "").strip() or None)
 
 
 def reset(worker: LLMWorker | None = None, history: dyn_mod.History | None = None) -> None:
@@ -186,10 +188,12 @@ def _dup_card(g: dict, inc_id: str, at: str) -> dict:
 def _overlay_llm(incidents: dict[str, dict], watched: list, groups: list[dict], tasks: list[Task]) -> None:
     """Накладывает готовые ответы GigaChat из кэша и ставит в очередь то, чего в кэше нет."""
     w = _worker
+    base_model = getattr(w, "base_model", None)
+    advanced_model = getattr(w, "advanced_model", None)
     risk_top = sorted((inc for inc, _, _ in watched if (inc["ai"]["risk"] or {}).get("level") == "high"),
                       key=lambda i: -i["ai"]["risk"]["score"])[:RISK_EXPLAIN_TOP]
     risk_top_ids = {i["id"] for i in risk_top}
-    task_of: dict[str, str] = {}
+    task_of: dict[str, set[str]] = {}
 
     for inc, live, dyn in watched:
         ai = inc["ai"]
@@ -199,6 +203,7 @@ def _overlay_llm(incidents: dict[str, dict], watched: list, groups: list[dict], 
         used_llm: list[str] = []
 
         def take(name: str, key: str, apply, part_payload) -> None:
+            key = model_key(key, (advanced_model or base_model) if name in ADVANCED_PARTS else base_model)
             found = w.lookup(key)
             if found is None:
                 if not w.known(key):
@@ -250,11 +255,18 @@ def _overlay_llm(incidents: dict[str, dict], watched: list, groups: list[dict], 
             ai["source"] = "gigachat" if "gigachat" in used_llm else "cache"
         if missing:
             prio = min([GROUP_PRIORITY.get(x, 9) for x in live] + ([DYNAMICS_PRIORITY] if dyn else []))
-            key = "inc:" + inc["id"] + ":" + ",".join(sorted(missing.values()))
-            tasks.append(Task(key=key, priority=prio - (ai["risk"] or {}).get("score", 0) / 1000,
-                              prompt=build_incident_prompt(fields, prompt_parts), parts=missing,
-                              meta={"parts": prompt_parts}))
-            task_of[inc["id"]] = key
+            batches = {False: {}, True: {}}
+            for name, part_key in missing.items():
+                batches[bool(advanced_model) and name in ADVANCED_PARTS][name] = part_key
+            for advanced, parts in batches.items():
+                if not parts:
+                    continue
+                key = "inc:" + inc["id"] + ":" + ",".join(sorted(parts.values()))
+                payload = {name: prompt_parts[name] for name in parts}
+                tasks.append(Task(key=key, priority=prio - (ai["risk"] or {}).get("score", 0) / 1000,
+                                  prompt=build_incident_prompt(fields, payload), parts=parts,
+                                  meta={"parts": payload}, advanced=advanced))
+                task_of.setdefault(inc["id"], set()).add(key)
 
     for g in groups:
         g["all_ids"] = list(g["ids"])
@@ -262,14 +274,14 @@ def _overlay_llm(incidents: dict[str, dict], watched: list, groups: list[dict], 
             continue
         members = [{"id": i, "title": incidents[i].get("title"), "text": incident_fields(incidents[i])["краткое описание"]}
                    for i in g["ids"][:dup_mod.BURST_SHOWN]]
-        key = dup_key(members)
+        key = model_key(dup_key(members), advanced_model or base_model)
         found = w.lookup(key)
         if found is None:
             if not w.known(key):
                 prio = min((GROUP_PRIORITY.get(x, 9) for i in g["ids"] for x in incidents[i].get("groups", ())), default=5)
                 tasks.append(Task(key="dup:" + key, priority=prio + (0.5 if g["tier"] == "text" else 0.7),
                                   prompt=build_dup_prompt(members), parts={"dup": key}, kind="dup",
-                                  meta={"ids": [m["id"] for m in members]}))
+                                  meta={"ids": [m["id"] for m in members]}, advanced=True))
             continue
         value, source, when = found
         if not value:
@@ -324,8 +336,8 @@ def _overlay_llm(incidents: dict[str, dict], watched: list, groups: list[dict], 
             ai["duplicates"] = None
 
     queued = w.submit(tasks)
-    for inc_id, key in task_of.items():
-        if key in queued:
+    for inc_id, keys in task_of.items():
+        if keys & queued:
             incidents[inc_id]["ai"]["pending"] = True
     global _dup_groups
     _dup_groups = visible

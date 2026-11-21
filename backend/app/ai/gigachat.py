@@ -24,10 +24,14 @@ class GigaChatRateLimit(GigaChatError):
     rate_limited = True
 
 
+class GigaChatModelUnavailable(GigaChatError):
+    """Запрошенная расширенная модель недоступна для генерации."""
+
+
 class GigaChatClient:
     def __init__(self, credentials: str, scope: str = "GIGACHAT_API_PERS", ca_bundle: Path | None = None,
                  model: str = "GigaChat", timeout: float = 40.0):
-        if not credentials:
+        if not credentials.strip():
             raise GigaChatError("GIGACHAT_CREDENTIALS не задан")
         self.credentials = credentials.strip()
         self.scope = scope
@@ -56,19 +60,36 @@ class GigaChatClient:
         except httpx.ConnectError as e:
             raise GigaChatError(_tls_hint(e)) from e
         if r.status_code != 200:
-            raise GigaChatError(f"OAuth {r.status_code}: {r.text[:200]}")
+            raise GigaChatError(f"OAuth {r.status_code}")
         data = r.json()
         self._token = data["access_token"]
         self._token_exp = data.get("expires_at", 0) / 1000 or time.time() + 1500
         return self._token
 
-    def chat(self, messages: list[dict], temperature: float = 0.2, max_tokens: int = 600) -> str:
+    def list_models(self) -> list[str]:
+        """Запрос каталога для текущего OAuth-токена, без генерации и вывода ключа."""
+        token = self._auth()
+        try:
+            r = httpx.get(f"{API_URL}/models", headers={"Authorization": f"Bearer {token}",
+                                                       "Accept": "application/json"},
+                          verify=self.verify, timeout=self.timeout)
+        except httpx.ConnectError as e:
+            raise GigaChatError(_tls_hint(e)) from e
+        if r.status_code == 401:
+            self._token = None
+        if r.status_code != 200:
+            raise GigaChatError(f"Список моделей GigaChat: HTTP {r.status_code}")
+        return [model["id"] for model in r.json()["data"]]
+
+    def chat(self, messages: list[dict], temperature: float = 0.2, max_tokens: int = 600,
+             *, model: str | None = None) -> str:
         token = self._auth()
         try:
             r = httpx.post(
                 f"{API_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                json={"model": self.model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens},
+                json={"model": model or self.model, "messages": messages, "temperature": temperature,
+                      "max_tokens": max_tokens},
                 verify=self.verify,
                 timeout=self.timeout,
             )
@@ -79,6 +100,8 @@ class GigaChatClient:
             raise GigaChatError("токен истёк, повторим")
         if r.status_code == 429:
             raise GigaChatRateLimit("лимит запросов GigaChat (429)")
+        if model and r.status_code in (402, 403, 404):
+            raise GigaChatModelUnavailable(f"Расширенная модель GigaChat недоступна (HTTP {r.status_code})")
         if r.status_code != 200:
             raise GigaChatError(f"chat {r.status_code}: {r.text[:200]}")
         return r.json()["choices"][0]["message"]["content"]
