@@ -35,6 +35,7 @@ from .forecast import forecast_all
 from .groups import assign_groups
 from .history import History
 from .outages import Outage, OutageCandidate, build_candidates, build_outages
+from .recurrences import apply_recurrences
 from .refs import Refs
 
 AI_REFRESH_SECONDS = 30   # риск и прогноз зависят от времени — пересчитываем и без правок
@@ -224,6 +225,7 @@ class Store:
         self.groups = assign_groups(new_incidents, self.rules, now, self.seen_resolved)
         self.refs = Refs(new_incidents, now, changed, removed, self.history)
         self._derive(new_incidents, now)
+        apply_recurrences(new_incidents, self.rules.coordinators_team)
         self._outages = build_outages(new_incidents, self.seen_resolved, self.history)
         self._visible_outages = self._outages_in_snapshot(now)
 

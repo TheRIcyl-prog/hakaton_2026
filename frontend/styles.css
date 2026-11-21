@@ -410,6 +410,8 @@ body.wall.no-cursor, body.wall.no-cursor * { cursor: none !important; }
 .card-foot { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 5px; font-size: 11px; color: var(--muted); }
 .card-foot .also { margin: 0; font-size: 11px; }
 .tag-dup { font-size: 10px; font-weight: 700; color: var(--blue); background: var(--blue-bg); padding: 1px 6px; border-radius: 5px; white-space: nowrap; }
+.recurrence-badge { align-self: center; padding: 1px 6px; border-radius: 5px; color: var(--blue); background: var(--blue-bg); font-weight: 700; }
+.recurrence-badge.strong { color: #ff9bad; background: var(--red-bg); }
 .arm .changed { font-size: 11px; }
 
 /* панель выбранного инцидента */
@@ -429,6 +431,11 @@ body.wall.no-cursor, body.wall.no-cursor * { cursor: none !important; }
 .panel .countdown { font-size: 15px; }
 .panel .drawer-btns { margin: 10px 0 0; gap: 6px; }
 .panel .comment-form { margin-top: 10px; }
+.recurrence-meta { color: var(--muted); font-size: 12px; }
+.recurrence-advice { margin: 6px 0; }
+.recurrence-cases { margin: 6px 0 0; padding: 0; list-style: none; }
+.recurrence-cases li { padding: 6px 0; border-top: 1px solid var(--line); }
+.recurrence-link { padding: 0; max-width: 100%; border: 0; background: none; font: inherit; text-align: left; overflow-wrap: anywhere; }
 .panel .ai-box { padding: 10px; font-size: 13px; line-height: 1.4; }
 .ai-why { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .ai-why b { color: var(--purple); font-weight: 700; }

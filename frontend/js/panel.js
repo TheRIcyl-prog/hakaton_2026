@@ -90,6 +90,24 @@ function historyHtml(list, nowMs) {
       <div>${h.kind === "reopen" ? "вернули в работу" : `${esc(h.before ?? "—")} → ${esc(h.after ?? "—")}`}${h.by ? ` · <i>${esc(firstName(h.by))}</i>` : ""}</div></div>`).join("")}</div>`;
 }
 
+function recurrenceSection(recurrence, nowMs) {
+  if (!recurrence) return "";
+  const { count, level, suggested_team, cases } = recurrence;
+  return `<section class="recurrence-history" aria-label="Прошлые случаи">
+    <h3>Прошлые случаи</h3>
+    <div class="recurrence-meta">${count > cases.length
+      ? `Показано ${esc(cases.length)} из ${esc(count)} за неделю`
+      : `За неделю до регистрации · ${esc(count)} ${plural(count, "случай", "случая", "случаев")}`}
+      ${level === "strong" ? " · Повтор после постоянного решения" : ""}</div>
+    ${suggested_team ? `<p class="recurrence-advice">Рекомендуем передать в «${esc(suggested_team)}» по опыту прошлых случаев.</p>` : ""}
+    <ul class="recurrence-cases">${cases.map((item) => `<li>
+      <div><button type="button" class="linklike recurrence-link" data-open="${esc(item.id)}">${esc(item.id)}</button>${item.title ? ` · ${esc(item.title)}` : ""}</div>
+      <div class="recurrence-meta">${item.resolved_at ? `Решён <time datetime="${esc(item.resolved_at)}">${esc(fmtDateTime(item.resolved_at, nowMs))} МСК</time> · ` : ""}${esc(item.team || "Команда не указана")}${item.state_reason && item.state_reason !== "Нет" ? ` · ${esc(item.state_reason)}` : ""}</div>
+      ${item.solution ? `<div class="panel-text"><b>Как исправили</b> · ${esc(item.solution)}</div>` : ""}
+    </li>`).join("")}</ul>
+  </section>`;
+}
+
 // handlers: {close, copy, open, claim, release, transfer, escalate, comment, confirmDups, me}
 export function renderPanel(inc, snap, nowMs, handlers, history) {
   const el = document.getElementById("drawer");
@@ -146,6 +164,8 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
       <a class="btn small" href="${esc(inc.itsm_url || "#")}" target="_blank" rel="noopener" title="Статус, приоритет и срок меняются в ITSM">Открыть в ITSM ↗</a>
     </div>
     <form class="comment-form" data-act="comment"><input name="text" placeholder="Комментарий в журнал работ…" autocomplete="off"><button class="btn small">Добавить</button></form>
+
+    ${recurrenceSection(inc.recurrence, nowMs)}
 
     ${aiSection(inc, snap)}
 

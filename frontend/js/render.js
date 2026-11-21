@@ -285,8 +285,10 @@ export function renderBoard(snap, nowMs, ui) {
       const action = ui.actions ? ui.actions.get(id) : null;
       const compact = ui.wall && seenWall.has(id);
       if (ui.wall) seenWall.add(id);
+      const recurrence = ui.wall ? null : inc.recurrence;
       const sig = [inc.hash, inc.groups.join(), inc.resolved_in.join(), JSON.stringify(inc.ai), inc.forecast && inc.forecast.level,
-        claim ? claim.by : "", inc.work_log.length, changed ? changed.until : 0, action ? action.id : "", compact, hideDuplicate].join("|");
+        claim ? claim.by : "", inc.work_log.length, changed ? changed.until : 0, action ? action.id : "", compact, hideDuplicate,
+        recurrence?.count, recurrence?.level].join("|");
       let entry = cardCache.get(key);
       if (!entry || entry.sig !== sig) {
         const el = entry ? entry.el : document.createElement("article");
@@ -450,7 +452,11 @@ function fillCardArm(el, inc, group, nowMs, changed, claim, action, act) {
   if (group === "coordinators" && active) buttons.push(`<button class="btn small btn-primary" data-act="transfer">Передать</button>`);
   if (action && action.kind === "escalate" && active) buttons.push(`<button class="btn small" data-act="escalate">Эскалировать</button>`);
   const esc_ = lastEscalation(inc);
+  const recurrence = active && inc.recurrence;
+  const strong = recurrence?.level === "strong";
   const tags = [
+    recurrence ? `<span class="recurrence-badge${strong ? " strong" : ""}"${strong ? ' title="Сбой повторился после постоянного решения"' : ""}>
+      ${strong ? "Сильный повтор" : "Повтор"} · ${esc(recurrence.count + 1)}-й за неделю</span>` : "",
     esc_ ? `<span class="escalated" title="эскалирован">⇪ эскалирован ${esc(fmtTime(esc_.at))}</span>` : "",
     also.length ? `<span class="also" title="также в группах">также: ${also.join(", ")}</span>` : "",
   ].filter(Boolean).join("");

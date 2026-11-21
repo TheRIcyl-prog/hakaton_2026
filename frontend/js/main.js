@@ -316,9 +316,15 @@ const drawerHandlers = {
   comment: (id, text) => act(() => api.comment(id, text), "Комментарий добавлен"),
 };
 
-// inc — инцидент из списка поиска, если его нет в снимке (свежую версию догрузим с сервера)
-function openDrawer(id, inc) {
-  if (id && state.snap && !state.snap.incidents[id]) {
+// inc — инцидент из списка поиска. Ссылки по одному номеру могут вести за пределы снимка.
+let drawerRequest = 0;
+async function openDrawer(id, inc) {
+  const request = ++drawerRequest;
+  if (id && !inc && !getInc(id)) {
+    await fetchExtra(id);
+    if (request !== drawerRequest) return;
+    if (!getInc(id)) { R.toast(`Не удалось открыть ${id}`, "bad"); return; }
+  } else if (id && state.snap && !state.snap.incidents[id]) {
     if (inc) state.extra.set(id, inc);
     fetchExtra(id);
   }
