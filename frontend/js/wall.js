@@ -5,6 +5,7 @@ import * as Sound from "./sound.js";
 import { computeAlerts, processEvents, ring } from "./alerts.js";
 import { startPolling } from "./api.js";
 import { renderWallOutages } from "./outages.js";
+import { paintWallOverview } from "./wall-overview.js";
 
 const HIGHLIGHT_MS = 20000;
 const BANNER_MS = 5000; // красная полоса на новый критический — 5 секунд, дальше мигает карточка
@@ -64,7 +65,7 @@ function render() {
   renderBanner(now);
   renderWallOutages(outagesEl, snap, ui.alarmIds);
   R.renderBoard(snap, now, ui);
-  R.renderFeed(snap, null);
+  paintWallOverview(snap, now);
   R.tickCountdowns(now);
   ring(state.alerts, now, { voice: true, onlyCritical: true }); // звук и голос молчат, если выключены (по умолчанию)
 }
@@ -85,6 +86,7 @@ setInterval(() => {
   const now = nowMs();
   R.tickCountdowns(now);
   R.renderClock(state.snap, now);
+  paintWallOverview(state.snap, now);
   let expired = false;
   for (const [id, c] of ui.changed) if (c.until <= Date.now()) { ui.changed.delete(id); expired = true; }
   if (expired) R.renderBoard(state.snap, now, ui);

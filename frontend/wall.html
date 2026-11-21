@@ -6,6 +6,7 @@
   <title>Видеостена · массовые инциденты · МТС</title>
   <link rel="icon" id="favicon" href="data:,">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/wall-overview.css">
 </head>
 <body class="wall">
   <header class="topbar" id="topbar">
@@ -21,12 +22,16 @@
       <button class="icon-btn" id="voice-btn"></button>
     </div>
   </header>
+  <section id="wall-urgency" class="wall-urgency" aria-label="Срочность по группам"></section>
 
   <div id="filebar" class="filebar hidden"></div>
   <section id="alerts" class="alerts"></section>
   <section class="wall-outages hidden" id="wall-outages" aria-label="Сбои сейчас"></section>
 
-  <main class="board" id="board"></main>
+  <div class="wall-workspace">
+    <main class="board" id="board"></main>
+    <aside id="wall-owners" class="wall-owners" aria-label="Кто чем занят"></aside>
+  </div>
 
   <footer class="feed" id="feed"></footer>
   <div class="toasts" id="toasts"></div>
