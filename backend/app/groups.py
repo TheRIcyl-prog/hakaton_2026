@@ -1,12 +1,15 @@
 """Incident → группы по правилам из config/rules.yaml."""
 from __future__ import annotations
 
+from collections.abc import Set
 from datetime import datetime, timedelta
 
 from .adapter import norm_team, parse_dt
 from .config import GroupRule, Rules
 
 DONE = ("resolved", "closed", "research")
+FINISHED_MINUTES = 30
+CLOSED_MINUTES = 5
 
 
 def _teams(rule: GroupRule) -> frozenset | None:
@@ -30,23 +33,29 @@ def _match(inc: dict, rule: GroupRule) -> bool:
 
 
 def resolved_moment(inc: dict, seen_resolved_at: datetime | None) -> datetime | None:
-    """Когда решён: completionDate из файла, иначе когда сервер увидел переход в решённый."""
-    return parse_dt(inc.get("resolved_at")) or seen_resolved_at
+    """Дата завершения из файла, для закрытых в первую очередь момент закрытия."""
+    completion = parse_dt(inc.get("resolved_at"))
+    return (seen_resolved_at or completion) if inc["state_kind"] == "closed" else (completion or seen_resolved_at)
+
+
+def finished_until(inc: dict, seen_at: datetime | None, minutes: int = FINISHED_MINUTES) -> datetime | None:
+    if inc["state_kind"] not in DONE:
+        return None
+    at = resolved_moment(inc, seen_at)
+    if at is None:
+        return None
+    limit = min(CLOSED_MINUTES, minutes) if inc["state_kind"] == "closed" else minutes
+    return at + timedelta(minutes=limit)
 
 
 def recently_resolved(inc: dict, rule: GroupRule, now: datetime, seen_resolved_at: datetime | None) -> bool:
-    if rule.show_resolved_minutes <= 0 or inc["state_kind"] not in DONE:
-        return False
     if rule.priority_ids is not None and inc["priority_id"] not in rule.priority_ids:
         return False
     teams = _teams(rule)
     if teams is not None and norm_team(inc["team"]) not in teams:
         return False
-    at = resolved_moment(inc, seen_resolved_at)
-    if at is None:
-        return False
-    # Дата решения «из будущего» (кто-то вписал руками) — тоже показываем
-    return now - at <= timedelta(minutes=rule.show_resolved_minutes)
+    until = finished_until(inc, seen_resolved_at, rule.show_resolved_minutes)
+    return until is not None and now < until
 
 
 def assign_groups(
@@ -54,6 +63,7 @@ def assign_groups(
     rules: Rules,
     now: datetime,
     seen_resolved: dict[str, datetime] | None = None,
+    closed_from_research: Set[str] = frozenset(),
 ) -> dict[str, list[str]]:
     """Проставляет inc['groups'], inc['resolved_in'] и возвращает {group: [id, ...]} в порядке показа."""
     seen_resolved = seen_resolved or {}
@@ -66,7 +76,10 @@ def assign_groups(
             if _match(inc, rule):
                 groups.append(rule.key)
                 out[rule.key].append(inc["id"])
-            elif done and rule.show_resolved_minutes > 0 and recently_resolved(inc, rule, now, seen_resolved.get(inc["id"])):
+            elif (done and rule.show_resolved_minutes > 0
+                  and (rule.key != "research" or inc["id"] in closed_from_research)
+                  and (inc["state_kind"] != "research" or rule.key == "critical")
+                  and recently_resolved(inc, rule, now, seen_resolved.get(inc["id"]))):
                 groups.append(rule.key)
                 resolved_in.append(rule.key)
                 out[rule.key].append(inc["id"])

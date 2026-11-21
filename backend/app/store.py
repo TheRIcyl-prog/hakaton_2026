@@ -32,7 +32,7 @@ from .config import Rules, Settings
 from .desk import ALERT_GROUPS, DeskState
 from .diff import DONE_KINDS, diff
 from .forecast import forecast_all
-from .groups import assign_groups
+from .groups import assign_groups, finished_until
 from .history import History
 from .labels import apply_labels
 from .outages import Outage, OutageCandidate, build_candidates, build_outages
@@ -42,7 +42,7 @@ from .recurrences import apply_recurrences
 from .refs import Refs
 
 AI_REFRESH_SECONDS = 30   # риск и прогноз зависят от времени — пересчитываем и без правок
-REGROUP_SECONDS = 1.0     # решённый критический уходит из группы через 30 мин — проверяем раз в секунду
+REGROUP_SECONDS = 1.0     # проверяем окно показа завершённых и закрытых раз в секунду
 STAT_TRUST_SECONDS = 2.0  # файл старше — верим mtime+size без чтения
 OLD_VERSIONS = 3000       # прошлые версии инцидентов по hash — чтобы объяснить конфликт «инцидент изменился»
 _ENRICH_TAKES_REFS = "refs" in inspect.signature(enrich).parameters
@@ -75,6 +75,8 @@ class Store:
         self.raw_by_id: dict[str, dict] = {}
         self.groups: dict[str, list[str]] = {g.key: [] for g in rules.groups}
         self.seen_resolved: dict[str, datetime] = {}
+        self._closed_from_research: set[str] = set()
+        self._visible_done_claims: tuple[str, ...] = ()
         self.events: deque[dict] = deque(maxlen=300)
         self.actions: list[dict] = []
         self._outage_candidates: dict[str, OutageCandidate] = {}
@@ -176,6 +178,7 @@ class Store:
                 # Файл подменили целиком (другая выгрузка/демо-файл): новая точка отсчёта, без лавины событий
                 self.clock.reanchor(adapter.export_moment(data))
                 self.seen_resolved.clear()
+                self._closed_from_research.clear()
                 self.history.clear()
                 self.loaded = False
             self.clock.set_anchor_if_empty(adapter.export_moment(data))
@@ -208,29 +211,27 @@ class Store:
     def _apply(self, new_incidents: dict[str, dict]) -> None:
         now = self.clock.now()
         old = self.incidents
-        changed = {i for i, inc in new_incidents.items() if old.get(i) is not inc}
+        changed = {i for i, inc in new_incidents.items() if not self.loaded or old.get(i) is not inc}
         removed = set(old) - set(new_incidents)
-        # Запоминаем, когда увидели переход в «решён» — если в файле нет completionDate
+        # История — до пересчёта групп и ИИ. После перезапуска из неё восстанавливаем время закрытия.
+        self.history.record(old if self.loaded else {}, new_incidents, changed, now)
         for inc_id in changed:
-            inc, prev = new_incidents[inc_id], old.get(inc_id)
-            if inc["state_kind"] in DONE_KINDS and prev is not None and prev["state_kind"] not in DONE_KINDS:
-                self.seen_resolved[inc_id] = now
-            elif inc["state_kind"] == "active":
-                self.seen_resolved.pop(inc_id, None)
+            prev = old.get(inc_id) if self.loaded else None
+            self._track_finish(new_incidents[inc_id], prev, now)
             if prev is not None:
                 self._old_versions[prev["hash"]] = prev
         for inc_id in removed:
             self.seen_resolved.pop(inc_id, None)
+            self._closed_from_research.discard(inc_id)
         while len(self._old_versions) > OLD_VERSIONS:
             self._old_versions.popitem(last=False)
 
-        # История — до пересчёта ИИ: динамика (п. 8.5) должна видеть эту же правку, а не следующую
-        self.history.record(old if self.loaded else {}, new_incidents, changed, now)  # при первой загрузке — засев из workLog
-        self.groups = assign_groups(new_incidents, self.rules, now, self.seen_resolved)
+        self.groups = assign_groups(new_incidents, self.rules, now, self.seen_resolved, self._closed_from_research)
+        self._visible_done_claims = self._done_claims(new_incidents, now)
         self.refs = Refs(new_incidents, now, changed, removed, self.history)
         apply_recurrences(new_incidents, self.rules.coordinators_team)
         self._derive(new_incidents, now)
-        self._outages = build_outages(new_incidents, self.seen_resolved, self.history)
+        self._outages = build_outages(new_incidents, self.seen_resolved)
         self._visible_outages = self._outages_in_snapshot(now)
 
         if self.loaded:
@@ -245,6 +246,30 @@ class Store:
         self.desk.sync_alerts(new_incidents)
         self._last_regroup = now
         self.version += 1
+
+    def _track_finish(self, inc: dict, prev: dict | None, now: datetime) -> None:
+        inc_id, state = inc["id"], inc["state_id"]
+        if prev is not None and prev["state_id"] == state:
+            return
+        self.seen_resolved.pop(inc_id, None)
+        self._closed_from_research.discard(inc_id)
+        if inc["state_kind"] not in DONE_KINDS:
+            return
+        if prev is not None:
+            at, before = now, prev["state_id"]
+        else:
+            transition = next((e for e in reversed(self.history.get(inc_id))
+                               if e.get("kind") == "state" and e.get("after_id") == state), {})
+            at, before = adapter.parse_dt(transition.get("at")), transition.get("before_id")
+        if at is not None:
+            self.seen_resolved[inc_id] = at
+        if inc["state_kind"] == "closed" and self.rules.state_kind(before) == "research":
+            self._closed_from_research.add(inc_id)
+
+    def _done_claims(self, incidents: dict[str, dict], now: datetime) -> tuple[str, ...]:
+        return tuple(inc_id for inc_id, inc in incidents.items()
+                     if inc.get("coordinator") and inc["state_kind"] in ("closed", "resolved")
+                     and (until := finished_until(inc, self.seen_resolved.get(inc_id))) is not None and now < until)
 
     def _derive(self, incidents: dict[str, dict], now: datetime) -> None:
         """Производные поля: прогноз срока, ИИ, очередь действий."""
@@ -263,7 +288,7 @@ class Store:
             enrich(incidents, now, self.rules, refs=refs)
         else:
             enrich(incidents, now, self.rules)
-        self._outage_candidates = build_candidates(ai_layer.outage_candidates(), incidents)
+        self._outage_candidates = build_candidates(ai_layer.outage_candidates(), incidents, raw_by_id=self.raw_by_id)
 
     def _outages_in_snapshot(self, now: datetime) -> list[dict]:
         return [outage.summary for outage in self._outages.values() if outage.visible(now)]
@@ -279,11 +304,15 @@ class Store:
             return False
         with self.lock:
             self._last_regroup = now
-            groups = assign_groups(self.incidents, self.rules, now, self.seen_resolved)
+            groups = assign_groups(self.incidents, self.rules, now, self.seen_resolved, self._closed_from_research)
             changed = groups != self.groups
             self.groups = groups
             if changed:
                 self.desk.sync_alerts(self.incidents)
+            done_claims = self._done_claims(self.incidents, now)
+            if done_claims != self._visible_done_claims:
+                self._visible_done_claims = done_claims
+                changed = True
             if ai_due:
                 self._derive(self.incidents, now)
                 changed = True
@@ -361,6 +390,8 @@ class Store:
         for i, inc in self.incidents.items():
             if inc.get("coordinator") and inc["state_kind"] == "active":
                 seen[i] = None
+        for i in self._visible_done_claims:
+            seen[i] = None
         for a in self.actions:
             seen[a["incident_id"]] = None
         return [i for i in seen if i in self.incidents]
@@ -511,7 +542,7 @@ class Store:
         hidden = self.queue_preferences.hidden(by)
         with self.lock:
             items = build_queue(self.incidents, self.actions, self._outage_candidates.values(), self.history,
-                                by, self.clock.now())
+                                by, self.clock.now(), self.seen_resolved)
         return [item for item in items if item["id"] not in hidden]
 
     def events_after(self, seq: int) -> list[dict]:

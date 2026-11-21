@@ -7,7 +7,7 @@ from typing import Iterable
 from .actions import forecast_warning
 from .adapter import escalation_scope_changed, norm_team, parse_dt
 from .diff import DONE_KINDS
-from .groups import sort_key
+from .groups import finished_until, sort_key
 from .history import History
 from .outages import OutageCandidate
 
@@ -64,7 +64,7 @@ def _order(item: dict, incidents: dict[str, dict], now: datetime) -> tuple:
 
 
 def build_queue(incidents: dict[str, dict], actions: list[dict], candidates: Iterable[OutageCandidate],
-                history: History, by: str, now: datetime) -> list[dict]:
+                history: History, by: str, now: datetime, seen_resolved: dict[str, datetime]) -> list[dict]:
     visible = {inc_id: inc for inc_id, inc in incidents.items() if _owner(inc) in ("", by)}
     items = []
     escalations = set()
@@ -83,7 +83,9 @@ def build_queue(incidents: dict[str, dict], actions: list[dict], candidates: Ite
 
     for inc_id, inc in visible.items():
         if inc["state_kind"] in DONE_KINDS and inc["is_need_up"]:
-            items.append(_task("aftermath", "Проверить последствия", "после решения остались последствия", inc=inc))
+            until = finished_until(inc, seen_resolved.get(inc_id))
+            if inc["state_kind"] == "research" or (until is not None and now < until):
+                items.append(_task("aftermath", "Проверить последствия", "после решения остались последствия", inc=inc))
         if inc["state_kind"] != "active":
             continue
         if inc["priority_level"] == "critical" and not _owner(inc):

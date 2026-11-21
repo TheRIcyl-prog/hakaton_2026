@@ -397,13 +397,14 @@ function aiLineFor(inc, group) {
 
 const ownerName = (inc) => (inc.coordinator && inc.coordinator.name ? firstName(inc.coordinator.name) : "");
 
-// Решённый в этой группе (висит 30 мин) — сжатая зелёная строка «решён в 14:05»
+// Завершённый или закрытый инцидент показываем компактно, пока не истекло окно показа.
 function fillResolvedLine(el, inc, nowMs, wall) {
   const labels = wall ? "" : incidentLabels(inc, 2);
+  const status = inc.state_kind === "closed" ? "закрыт" : `решён${inc.resolved_at ? " в " + esc(fmtWhen(inc.resolved_at, nowMs)) : ""}`;
   el.className = `card is-resolved one-line${labels ? " has-labels" : ""}`;
   el.innerHTML = `<span class="ok">✓</span><b class="card-product">${esc(inc.product || "—")}</b>
     <span class="line-title">${esc(cardTitle(inc).text)}</span>
-    <span class="line-when">решён${inc.resolved_at ? " в " + esc(fmtWhen(inc.resolved_at, nowMs)) : ""}${!wall && ownerName(inc) ? " · " + esc(ownerName(inc)) : ""}</span>
+    <span class="line-when">${status}${!wall && ownerName(inc) ? " · " + esc(ownerName(inc)) : ""}</span>
     ${labels ? `<div class="card-foot">${labels}</div>` : ""}`;
 }
 
@@ -426,7 +427,8 @@ function armCardSignature(inc, ui, changed, claim, action) {
 // Карточка АРМ
 function fillCardArm(el, inc, group, nowMs, changed, claim, action, ui) {
   const fields = ui.cardFields;
-  const resolved = inc.resolved_in.includes(group);
+  const closed = inc.state_kind === "closed";
+  const resolved = inc.resolved_in.includes(group) || (group === "outside" && (closed || inc.state_kind === "resolved"));
   const active = !resolved && inc.state_kind === "active";
   const focused = el.contains(document.activeElement) ? document.activeElement.dataset.act : null;
   el.className = resolved ? "card arm-card is-resolved" : "card arm-card";
@@ -450,7 +452,7 @@ function fillCardArm(el, inc, group, nowMs, changed, claim, action, ui) {
     <div class="card-top arm-card-head">
       <span class="inc-id">${esc(inc.id)}</span>
       <span class="card-prio prio-${esc(inc.priority_level)}">${esc(inc.priority || "—")}</span>
-      ${resolved ? `<span class="arm-card-resolved">Решён${fields.state && inc.resolved_at ? " в " + esc(fmtWhen(inc.resolved_at, nowMs)) : ""}</span>` : fields.deadline ? timer(inc, nowMs) : ""}
+      ${resolved ? `<span class="arm-card-resolved">${closed ? "Закрыт" : `Решён${fields.state && inc.resolved_at ? " в " + esc(fmtWhen(inc.resolved_at, nowMs)) : ""}`}</span>` : fields.deadline ? timer(inc, nowMs) : ""}
     </div>
     <button type="button" class="arm-card-title" data-act="open" title="${title}">${title}</button>
     ${fields.summary && inc.ai?.summary ? `<div class="card-meta1 arm-card-summary">Краткая суть · ${esc(inc.ai.summary)}</div>` : ""}

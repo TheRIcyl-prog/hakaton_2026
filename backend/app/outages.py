@@ -5,15 +5,11 @@ import hashlib
 import json
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Iterable
 
 from .adapter import iso, parse_dt
-from .diff import DONE_KINDS
-from .groups import resolved_moment
-from .history import History
-
-RESOLVED_FOR = timedelta(minutes=30)
+from .groups import finished_until
 
 
 @dataclass(frozen=True)
@@ -137,20 +133,7 @@ def _build_candidates(proposals: Iterable[dict], incidents: dict[str, dict], *, 
     return candidates
 
 
-def _resolved_at(inc: dict, seen_resolved: dict[str, datetime], history: History) -> datetime | None:
-    if inc["state_kind"] not in DONE_KINDS:
-        return None
-    at = resolved_moment(inc, seen_resolved.get(inc["id"]))
-    if at is not None:
-        return at
-    # Ручная правка могла не заполнить completionDate. После перезапуска остаётся история перехода.
-    for event in reversed(history.changes(inc["id"], kind="state")):
-        if event.get("before_id") not in (7, 10, 20) and event.get("after_id") in (7, 10, 20):
-            return parse_dt(event.get("at"))
-    return None
-
-
-def build_outages(incidents: dict[str, dict], seen_resolved: dict[str, datetime], history: History) -> dict[str, Outage]:
+def build_outages(incidents: dict[str, dict], seen_resolved: dict[str, datetime]) -> dict[str, Outage]:
     groups = defaultdict(list)
     for inc in incidents.values():
         if link := inc.get("outage"):
@@ -165,9 +148,7 @@ def build_outages(incidents: dict[str, dict], seen_resolved: dict[str, datetime]
             summary["status"] = "active"
         else:
             summary["status"] = "resolved"
-            moments = (_resolved_at(inc, seen_resolved, history) for inc in members)
-            last_resolved = max((at for at in moments if at is not None), default=None)
-            if last_resolved is not None:
-                expires_at = last_resolved + RESOLVED_FOR
+            expiries = (finished_until(inc, seen_resolved.get(inc["id"])) for inc in members)
+            expires_at = max((at for at in expiries if at is not None), default=None)
         outages[outage_id] = Outage(summary, expires_at)
     return outages

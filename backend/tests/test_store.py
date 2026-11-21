@@ -1,6 +1,11 @@
 """Чтение файла и события: имитируем то, что жюри делает с файлом на защите."""
 from datetime import timedelta
 
+from backend.app.adapter import iso
+from backend.app.history import History
+from backend.app.itsm import Itsm
+from backend.app.store import Store
+
 from .conftest import COORD, NOW, FakeClock, make, write
 
 
@@ -49,6 +54,42 @@ def test_critical_resolved_stays_then_leaves(make_store):
     clock._now = NOW + timedelta(minutes=31)
     assert store.poll()  # файл не менялся, но группа пересчиталась по времени
     assert store.groups["critical"] == []
+
+
+def test_finish_windows_from_each_transition_survive_restart(make_store, tmp_path):
+    clock = FakeClock()
+    owner = {"name": "Ольга", "at": iso(NOW)}
+    store, path = make_store([make("HIGH", 2, 3), make("MINE", 2, 2, coordinator=owner, isNeedUp=True),
+                              make("RESEARCH", 20, 2)], clock)
+    history_file = tmp_path / "switches.jsonl"
+    store.history = History(history_file)
+    itsm = Itsm(path, store.rules, clock.now, store=store)
+    for inc_id in ("HIGH", "MINE"):
+        itsm.set_state(inc_id, 7, "Ольга")
+    clock._now = NOW + timedelta(minutes=29)
+    store.poll()
+    assert store.groups["high"] == ["HIGH"]
+    assert "MINE" in store.snapshot()["incidents"]
+    clock._now = NOW + timedelta(minutes=30)
+    assert store.poll()
+    assert store.groups["high"] == []
+    assert "MINE" not in store.snapshot()["incidents"]
+
+    for inc_id in ("HIGH", "MINE", "RESEARCH"):
+        itsm.set_state(inc_id, 10, "Ольга")
+    closed = Store(store.settings, store.rules, clock, history=History(history_file))
+    assert closed.poll()
+    assert closed.groups["high"] == ["HIGH"] and closed.groups["research"] == ["RESEARCH"]
+    assert closed.snapshot()["incidents"]["HIGH"]["resolved_at"] == iso(NOW)
+    assert "MINE" in closed.snapshot()["incidents"]
+    assert any(item["id"] == "aftermath:MINE" for item in closed.queue("Ольга"))
+
+    clock._now = NOW + timedelta(minutes=35)
+    assert closed.poll()
+    assert not closed.groups["high"] and not closed.groups["research"]
+    assert not (closed.snapshot()["incidents"].keys() & {"HIGH", "MINE", "RESEARCH"})
+    assert not any(item["id"] == "aftermath:MINE" for item in closed.queue("Ольга"))
+    assert closed.incident("MINE")["state_kind"] == "closed"
 
 
 def test_reopened(make_store):
