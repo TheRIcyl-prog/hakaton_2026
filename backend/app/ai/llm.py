@@ -356,8 +356,6 @@ class LLMWorker:
             st["queue"] = len(self.wanted)
             st["in_flight"] = len(self.in_flight)
             st["cached"] = len(self.cache)
-            if st["state"] == "starting" and not self.wanted and not self.in_flight:
-                st.update(state="ok", label="ИИ: GigaChat")
             return st
 
     # ----- потоки -----
@@ -405,7 +403,7 @@ class LLMWorker:
                     self.wanted.setdefault(t.key, t)        # задача вернётся в очередь
                     if limited:
                         self._limit_hits += 1
-                        wait = min(self.retry_seconds, RATE_BACKOFF * 2 ** (self._limit_hits - 1))
+                        wait = min(self.retry_seconds, RATE_BACKOFF * 2 ** min(self._limit_hits - 1, 16))
                         state, label = "limited", "ИИ: GigaChat — лимит запросов, ответы задерживаются"
                     else:
                         wait = self.retry_seconds
@@ -413,6 +411,7 @@ class LLMWorker:
                     self.pause_until = max(self.pause_until, time.monotonic() + wait)
                     self.status.update(state=state, label=label, error=str(e)[:200],
                                        next_retry_at=iso(datetime.fromtimestamp(time.time() + wait, timezone.utc)))
+                    self.dirty = True
                     self.cv.notify_all()
                 continue
             try:
@@ -424,7 +423,7 @@ class LLMWorker:
                     results = parse_incident_answer(text, t.meta["parts"])
                 bad = False
             except Exception as e:  # noqa: BLE001 — кривой ответ модели
-                log.warning("GigaChat: непонятный ответ (%s): %s", e, text[:200])
+                log.warning("GigaChat: непонятный формат ответа (%s)", type(e).__name__)
                 results, bad = {}, True
             at = _real_now()
             with self.cv:
@@ -439,7 +438,7 @@ class LLMWorker:
                             self.cache[k]["fallback"] = True
                         self.from_disk.discard(k)
                     self._unsaved = True
-                    self.dirty = True
+                self.dirty = True
                 self._limit_hits = 0
                 self.status.update(state="ok", label="ИИ: GigaChat", error=None, last_ok_at=at, next_retry_at=None,
                                    done=self.status["done"] + 1)

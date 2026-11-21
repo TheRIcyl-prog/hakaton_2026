@@ -59,16 +59,16 @@ def setup(*, feedback_path: Path | None = None) -> None:
     _feedback = feedback_mod.FeedbackStore(feedback_path or ROOT / "cache" / "ai_feedback.json")
     if mode != "gigachat":
         return
-    from .gigachat import GigaChatClient, GigaChatError
+    from .gigachat import DEFAULT_MODEL, GigaChatClient, GigaChatError
 
-    ca = os.getenv("GIGACHAT_CA_BUNDLE") or "certs/russian_trusted_root_ca.cer"
+    ca = os.getenv("GIGACHAT_CA_BUNDLE") or "certs/Russian_Trusted_Root_CA.cer"
     ca_path = Path(ca) if Path(ca).is_absolute() else ROOT / ca
     try:
         client = GigaChatClient(
             os.getenv("GIGACHAT_CREDENTIALS", ""),
             os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS"),
             ca_path,
-            os.getenv("GIGACHAT_MODEL", "").strip() or "GigaChat",
+            os.getenv("GIGACHAT_MODEL", "").strip() or DEFAULT_MODEL,
             timeout=float(os.getenv("GIGACHAT_TIMEOUT", "30")),
         )
     except GigaChatError as e:

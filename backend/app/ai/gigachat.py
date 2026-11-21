@@ -5,6 +5,7 @@ TLS: сертификаты GigaChat выданы Russian Trusted Root CA (Ми�
 """
 from __future__ import annotations
 
+import ssl
 import time
 import uuid
 from pathlib import Path
@@ -12,7 +13,8 @@ from pathlib import Path
 import httpx
 
 OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-API_URL = "https://gigachat.devices.sberbank.ru/api/v1"
+API_URL = "https://api.giga.chat/v1"
+DEFAULT_MODEL = "GigaChat-2"
 
 
 class GigaChatError(RuntimeError):
@@ -30,14 +32,20 @@ class GigaChatModelUnavailable(GigaChatError):
 
 class GigaChatClient:
     def __init__(self, credentials: str, scope: str = "GIGACHAT_API_PERS", ca_bundle: Path | None = None,
-                 model: str = "GigaChat", timeout: float = 40.0):
+                 model: str = DEFAULT_MODEL, timeout: float = 40.0):
         if not credentials.strip():
             raise GigaChatError("GIGACHAT_CREDENTIALS не задан")
         self.credentials = credentials.strip()
         self.scope = scope
         self.model = model
         self.timeout = timeout
-        self.verify: str | bool = str(ca_bundle) if ca_bundle and ca_bundle.exists() else True
+        self.verify: ssl.SSLContext | bool = True
+        if ca_bundle and ca_bundle.exists():
+            try:
+                self.verify = ssl.create_default_context()
+                self.verify.load_verify_locations(cafile=str(ca_bundle))
+            except (OSError, ValueError) as e:
+                raise GigaChatError("не удалось загрузить сертификат GIGACHAT_CA_BUNDLE") from e
         self._token: str | None = None
         self._token_exp = 0.0
 
@@ -57,13 +65,14 @@ class GigaChatClient:
                 verify=self.verify,
                 timeout=self.timeout,
             )
-        except httpx.ConnectError as e:
-            raise GigaChatError(_tls_hint(e)) from e
+        except httpx.RequestError as e:
+            raise GigaChatError(_request_error("OAuth", e)) from e
         if r.status_code != 200:
             raise GigaChatError(f"OAuth {r.status_code}")
         data = r.json()
         self._token = data["access_token"]
-        self._token_exp = data.get("expires_at", 0) / 1000 or time.time() + 1500
+        expires = data.get("expires_at") or time.time() + 1500
+        self._token_exp = expires / 1000 if expires >= 100_000_000_000 else expires
         return self._token
 
     def list_models(self) -> list[str]:
@@ -73,8 +82,8 @@ class GigaChatClient:
             r = httpx.get(f"{API_URL}/models", headers={"Authorization": f"Bearer {token}",
                                                        "Accept": "application/json"},
                           verify=self.verify, timeout=self.timeout)
-        except httpx.ConnectError as e:
-            raise GigaChatError(_tls_hint(e)) from e
+        except httpx.RequestError as e:
+            raise GigaChatError(_request_error("Каталог моделей", e)) from e
         if r.status_code == 401:
             self._token = None
         if r.status_code != 200:
@@ -93,8 +102,8 @@ class GigaChatClient:
                 verify=self.verify,
                 timeout=self.timeout,
             )
-        except httpx.ConnectError as e:
-            raise GigaChatError(_tls_hint(e)) from e
+        except httpx.RequestError as e:
+            raise GigaChatError(_request_error("Генерация", e)) from e
         if r.status_code == 401:
             self._token = None
             raise GigaChatError("токен истёк, повторим")
@@ -103,12 +112,16 @@ class GigaChatClient:
         if model and r.status_code in (402, 403, 404):
             raise GigaChatModelUnavailable(f"Расширенная модель GigaChat недоступна (HTTP {r.status_code})")
         if r.status_code != 200:
-            raise GigaChatError(f"chat {r.status_code}: {r.text[:200]}")
+            raise GigaChatError(f"Генерация GigaChat: HTTP {r.status_code}")
         return r.json()["choices"][0]["message"]["content"]
 
 
-def _tls_hint(e: Exception) -> str:
-    msg = str(e)
-    if "CERTIFICATE" in msg.upper() or "SSL" in msg.upper():
-        return "TLS: нужен сертификат Russian Trusted Root CA (GIGACHAT_CA_BUNDLE)"
-    return f"нет связи с GigaChat: {msg[:120]}"
+def _request_error(stage: str, e: httpx.RequestError) -> str:
+    detail = str(e).upper()
+    if isinstance(e, httpx.TimeoutException):
+        message = "истекло время TLS-соединения" if "HANDSHAKE" in detail else "истекло время ожидания"
+    elif "CERTIFICATE" in detail or "SSL" in detail:
+        message = "ошибка TLS, проверьте GIGACHAT_CA_BUNDLE"
+    else:
+        message = "нет связи с GigaChat"
+    return f"{stage}: {message}"

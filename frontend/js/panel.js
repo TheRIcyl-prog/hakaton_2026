@@ -82,7 +82,8 @@ function aiSection(inc, snap) {
         «Да, это один сбой» запишет в файл мастер и дубли.${src(u)}</div>` : ""}</div>`);
   }
   const st = snap && snap.ai_status;
-  return `<h3>${aiTag} Подсказки ${st && st.label ? `<small class="ai-src">${esc(st.label)}</small>` : ""}${ai.pending ? `<small class="ai-src">· GigaChat думает…</small>` : ""}</h3>
+  const waiting = ai.pending && st?.state === "ok";
+  return `<h3>${aiTag} Подсказки ${st?.label ? `<small class="ai-src" title="${esc(st.error || st.label)}">${esc(st.label)}</small>` : ""}${waiting ? `<small class="ai-src">· В очереди GigaChat</small>` : ""}</h3>
     ${boxes.join("") || `<div class="pop-empty">Подсказок нет</div>`}${feedbackMarkup(inc, snap)}`;
 }
 

@@ -5,6 +5,7 @@ import threading
 import time
 
 import pytest
+from fastapi.testclient import TestClient
 
 from backend.app import ai
 from backend.app.adapter import adapt_all
@@ -158,6 +159,44 @@ def test_offline_keeps_rules_and_retries(tmp_path, rules):
     client.broken = False                     # сеть вернулась — задача из очереди уходит сама
     assert wait_until(lambda: w.snapshot_status()["state"] == "ok" and w.snapshot_status()["done"] == 1)
     assert run(rules, [make("K", 0, 4)])["K"]["ai"]["source"] == "gigachat"
+
+
+def test_snapshot_publishes_gigachat_failure_and_recovered_recommendation(make_store, tmp_path, monkeypatch):
+    from backend.app import main
+    from backend.app.ai import llm
+
+    monkeypatch.setattr(llm, "DIRTY_EVERY", 0)
+    endpoint_available = threading.Event()
+
+    class Recovering(FakeClient):
+        def chat(self, messages, **kwargs):
+            if not endpoint_available.is_set():
+                raise RuntimeError("OAuth timeout")
+            return super().chat(messages, **kwargs)
+
+    worker = setup_worker(tmp_path, Recovering(), retry_seconds=0.1)
+    assert ai.status()["state"] == "starting"
+    store, _ = make_store(coord_records())
+    monkeypatch.setattr(main, "store", store)
+    client = TestClient(main.app)
+    initial = client.get("/api/snapshot")
+
+    assert wait_until(lambda: worker.snapshot_status()["state"] == "offline")
+    assert store.poll()
+    offline = client.get("/api/snapshot", headers={"If-None-Match": initial.headers["etag"]})
+    assert offline.status_code == 200
+    assert offline.json()["ai_status"]["state"] == "offline"
+    assert offline.json()["incidents"]["C"]["ai"]["route"]["team"] == "КЦ Ступа"
+
+    endpoint_available.set()
+    assert wait_until(lambda: worker.snapshot_status()["state"] == "ok")
+    assert store.poll()
+    online = client.get("/api/snapshot", headers={"If-None-Match": offline.headers["etag"]})
+    assert online.status_code == 200
+    snap = online.json()
+    assert snap["ai_status"]["last_ok_at"]
+    assert snap["incidents"]["C"]["ai"]["route"]["source"] == "gigachat"
+    assert any(action["id"] == "route:C" and action["target_team"] == "КЦ Леший" for action in snap["actions"])
 
 
 def test_queue_order_critical_first(tmp_path, rules):

@@ -32,6 +32,12 @@ $env:LLM_PROVIDER = 'off'
 
 For two workstations, use separate browser profiles or two computers connected to the same server. To admit another computer on a trusted demo network, start with `--host 0.0.0.0` and use the server computer's local address.
 
+## Run with AI
+
+Set `GIGACHAT_CREDENTIALS` in the local `.env` and use `$env:LLM_PROVIDER = 'gigachat'` in the terminal before launching the server. The value in the terminal takes precedence over `.env`. The selected GigaChat account needs access to the configured `GIGACHAT_MODEL` and, if set, `GIGACHAT_MODEL_ADVANCED`.
+
+The incident panel shows rule-based suggestions immediately and adds model output asynchronously. Check `/api/health` for the provider, last successful response, and retry status. If the machine cannot reach GigaChat, the same workflow works with `$env:LLM_PROVIDER = 'rules'`, which keeps AI analysis local.
+
 ## Workflow and data ownership
 
 | Step | Behavior |
