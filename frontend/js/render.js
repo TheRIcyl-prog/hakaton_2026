@@ -5,6 +5,7 @@ import { esc, fmtDateTime, fmtTime, fmtLeft, fmtTimer, fmtWhen, plural, shortId 
 import { isDup } from "./filters.js";
 import { incidentLabels } from "./incident-labels.js";
 import { orderGroups } from "./column-settings.js";
+import { aiEnabled, outageTitle } from "./ai-mode.js";
 
 const GROUP_SHORT = { critical: "критические", coordinators: "на координаторах", high: "высокий", research: "исследование" };
 const COUNTER_LABEL = {
@@ -175,6 +176,7 @@ function fillOutageRow(el, row) {
 
 // ui: {query, changed, wall, open, predicate, limits, more, selected, alarmIds, actions, act}
 export function renderBoard(snap, nowMs, ui, board = $("#board")) {
+  const useAI = aiEnabled(snap);
   if (!boardCaches.has(board)) boardCaches.set(board, new Map());
   const cardCache = boardCaches.get(board);
   const ordered = ui.wall ? snap.groups : orderGroups(snap.groups, ui.columns.order);
@@ -206,7 +208,8 @@ export function renderBoard(snap, nowMs, ui, board = $("#board")) {
   let visibleColumns = 0;
   if (ui.wall) {
     for (const outage of snap.outages || []) {
-      for (const id of outage.incident_ids) outages.set(id, outage);
+      const summary = useAI ? outage : { ...outage, name: outageTitle(outage, useAI) };
+      for (const id of outage.incident_ids) outages.set(id, summary);
     }
     if (outages.size) {
       for (const inc of Object.values(snap.incidents)) {
@@ -267,14 +270,14 @@ export function renderBoard(snap, nowMs, ui, board = $("#board")) {
       const compact = ui.wall && seenWall.has(id);
       if (ui.wall) seenWall.add(id);
       const sig = ui.wall ? [inc.hash, inc.groups.join(), inc.resolved_in.join(), JSON.stringify(inc.ai), inc.forecast && inc.forecast.level,
-        claim ? claim.by : "", inc.work_log.length, changed ? changed.until : 0, action ? action.id : "", compact, hideDuplicate,
+        claim ? claim.by : "", inc.work_log.length, changed ? changed.until : 0, action ? action.id : "", compact, hideDuplicate, useAI,
       ].join("|") : armCardSignature(inc, ui, changed, claim, action);
       let entry = cardCache.get(key);
       if (!entry || entry.sig !== sig) {
         const el = entry ? entry.el : document.createElement("article");
         el.dataset.id = id;
-        if (compact) fillCompactWall(el, inc, g.key, nowMs, claim);
-        else if (ui.wall) fillCardWall(el, inc, g.key, nowMs, changed, claim, hideDuplicate);
+        if (compact) fillCompactWall(el, inc, g.key, nowMs, claim, useAI);
+        else if (ui.wall) fillCardWall(el, inc, g.key, nowMs, changed, claim, hideDuplicate, useAI);
         else fillCardArm(el, inc, g.key, nowMs, changed, claim, action, ui);
         if (ui.open) el.onclick = () => ui.open(id);
         entry = { sig, el };
@@ -351,9 +354,9 @@ function lastEscalation(inc) {
 }
 
 // Пять полей из задания — на карточке: продукт, возник, исполнитель «команда / сотрудник», статус, срок-таймер.
-export function cardTitle(inc) {
+export function cardTitle(inc, useAI = true) {
   // выжимка ИИ вместо длинной сути (оригинал — в панели); префикс «Продукт:» у выжимки срезаем — продукт уже в шапке
-  const sum = inc.ai && inc.ai.summary;
+  const sum = useAI && inc.ai?.summary;
   if (sum && (!inc.title || inc.title.length > 60)) {
     const p = (inc.product || "") + ":";
     return { text: sum.startsWith(p) ? sum.slice(p.length).trim() : sum, ai: true };
@@ -398,12 +401,12 @@ function aiLineFor(inc, group) {
 const ownerName = (inc) => (inc.coordinator && inc.coordinator.name ? firstName(inc.coordinator.name) : "");
 
 // Завершённый или закрытый инцидент показываем компактно, пока не истекло окно показа.
-function fillResolvedLine(el, inc, nowMs, wall) {
+function fillResolvedLine(el, inc, nowMs, wall, useAI) {
   const labels = wall ? "" : incidentLabels(inc, 2);
   const status = inc.state_kind === "closed" ? "закрыт" : `решён${inc.resolved_at ? " в " + esc(fmtWhen(inc.resolved_at, nowMs)) : ""}`;
   el.className = `card is-resolved one-line${labels ? " has-labels" : ""}`;
   el.innerHTML = `<span class="ok">✓</span><b class="card-product">${esc(inc.product || "—")}</b>
-    <span class="line-title">${esc(cardTitle(inc).text)}</span>
+    <span class="line-title">${esc(cardTitle(inc, useAI).text)}</span>
     <span class="line-when">${status}${!wall && ownerName(inc) ? " · " + esc(ownerName(inc)) : ""}</span>
     ${labels ? `<div class="card-foot">${labels}</div>` : ""}`;
 }
@@ -420,8 +423,8 @@ const metaLine = (inc, nowMs, wall) =>
 function armCardSignature(inc, ui, changed, claim, action) {
   return JSON.stringify([inc.hash, inc.groups, inc.resolved_in, inc.recurrence?.count, inc.recurrence?.level, inc.labels,
     claim?.by, claim?.at, inc.work_log.length, changed?.until, changed?.texts, action?.id, action?.draft,
-    inc.forecast?.level, inc.forecast?.basis, ui.cardFields, ui.cardFields.ai ? inc.ai : null,
-    ui.cardFields.summary ? inc.ai?.summary : null]);
+    inc.forecast?.level, inc.forecast?.basis, ui.cardFields, ui.aiEnabled,
+    ui.aiEnabled && ui.cardFields.ai ? inc.ai : null, ui.aiEnabled && ui.cardFields.summary ? inc.ai?.summary : null]);
 }
 
 // Карточка АРМ
@@ -455,9 +458,9 @@ function fillCardArm(el, inc, group, nowMs, changed, claim, action, ui) {
       ${resolved ? `<span class="arm-card-resolved">${closed ? "Закрыт" : `Решён${fields.state && inc.resolved_at ? " в " + esc(fmtWhen(inc.resolved_at, nowMs)) : ""}`}</span>` : fields.deadline ? timer(inc, nowMs) : ""}
     </div>
     <button type="button" class="arm-card-title" data-act="open" title="${title}">${title}</button>
-    ${fields.summary && inc.ai?.summary ? `<div class="card-meta1 arm-card-summary">Краткая суть · ${esc(inc.ai.summary)}</div>` : ""}
+    ${ui.aiEnabled && fields.summary && inc.ai?.summary ? `<div class="card-meta1 arm-card-summary">Краткая суть · ${esc(inc.ai.summary)}</div>` : ""}
     ${meta ? `<div class="card-meta1">${meta}</div>` : ""}
-    ${fields.ai && !resolved ? aiLineFor(inc, group) : ""}
+    ${ui.aiEnabled && fields.ai && !resolved ? aiLineFor(inc, group) : ""}
     ${buttons.length || labels ? `<div class="card-btns">${buttons.join("")}${labels}</div>` : ""}
     ${fields.updates && changed?.until > Date.now() ? `<div class="changed">● ${esc(changed.texts.join(" · "))}</div>` : ""}`;
 
@@ -477,8 +480,8 @@ function fillCardArm(el, inc, group, nowMs, changed, claim, action, ui) {
 }
 
 // Карточка стены: крупно, без кнопок, ИИ и номера; исполнитель — только команда; «в работе у Ольги»
-function fillCardWall(el, inc, group, nowMs, changed, claim, hideDuplicate) {
-  if (inc.resolved_in.includes(group)) { fillResolvedLine(el, inc, nowMs, true); return; }
+function fillCardWall(el, inc, group, nowMs, changed, claim, hideDuplicate, useAI) {
+  if (inc.resolved_in.includes(group)) { fillResolvedLine(el, inc, nowMs, true, useAI); return; }
   el.className = "card";
   el.classList.toggle("is-critical", inc.priority_level === "critical");
   el.classList.toggle("flash", !!changed && changed.until > Date.now());
@@ -496,7 +499,7 @@ function fillCardWall(el, inc, group, nowMs, changed, claim, hideDuplicate) {
       ${size > 1 ? `<span class="dup-badge">один сбой · ${size} ${plural(size, "заявка", "заявки", "заявок")}</span>` : ""}
       <span class="card-prio prio-${inc.priority_level}">${esc(inc.priority || "")}</span>
     </div>
-    <div class="card-title">${esc(size > 1 && d.name ? d.name : cardTitle(inc).text)}</div>
+    <div class="card-title">${esc(useAI && size > 1 && d.name ? d.name : cardTitle(inc, useAI).text)}</div>
     ${metaLine(inc, nowMs, true)}
     ${inc.state_kind === "active" ? `<div class="deadline">
         <div class="deadline-row">${timer(inc, nowMs)}${inc.deadline ? `<small>до ${esc(fmtWhen(inc.deadline, nowMs))}</small>` : ""}</div>
@@ -507,12 +510,12 @@ function fillCardWall(el, inc, group, nowMs, changed, claim, hideDuplicate) {
 }
 
 // Стена, инцидент уже есть полной карточкой в колонке левее — здесь компактная строка
-function fillCompactWall(el, inc, group, nowMs, claim) {
-  if (inc.resolved_in.includes(group)) { fillResolvedLine(el, inc, nowMs, true); return; }
+function fillCompactWall(el, inc, group, nowMs, claim, useAI) {
+  if (inc.resolved_in.includes(group)) { fillResolvedLine(el, inc, nowMs, true, useAI); return; }
   el.className = "card one-line compact-row";
   el.classList.toggle("is-critical", inc.priority_level === "critical");
   el.innerHTML = `<b class="card-product">${esc(inc.product || "—")}</b>
-    <span class="line-title">${esc(cardTitle(inc).text)}</span>
+    <span class="line-title">${esc(cardTitle(inc, useAI).text)}</span>
     ${claim ? `<span class="owner">${esc(firstName(claim.by))}</span>` : ""}
     ${timer(inc, nowMs)}`;
 }

@@ -48,8 +48,8 @@ def test_separate_cross_product_candidate_and_legacy_duplicates(rules):
     assert ai.outage_candidates() == []
 
 
-@pytest.mark.parametrize(("minute", "expected"), [(-15, ["A", "B", "C"]), (-15.001, None)])
-def test_outage_window_includes_exactly_fifteen_minutes(rules, minute, expected):
+@pytest.mark.parametrize(("minute", "expected"), [(-360, ["A", "B", "C"]), (-360.001, None)])
+def test_outage_window_includes_exactly_six_hours(rules, minute, expected):
     run(rules, [record("A", "Хранилище", minute), record("B", "Хранилище", -5), record("C", "Вход", 0)])
     assert [candidate["ids"] for candidate in ai.outage_candidates()] == ([expected] if expected else [])
 
@@ -65,7 +65,7 @@ def test_skips_non_active_missing_code_and_existing_outage(rules):
 
 
 def test_search_slides_past_one_product_window(rules):
-    records = [record("Early", "Хранилище", -25), record("A", "Хранилище", -11),
+    records = [record("Early", "Хранилище", -375), record("A", "Хранилище", -11),
                record("C", "Почта", -8), record("B", "Вход", -8)]
     run(rules, records)
     assert [candidate["ids"] for candidate in ai.outage_candidates()] == [["A", "B", "C"]]

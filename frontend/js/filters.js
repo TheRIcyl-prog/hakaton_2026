@@ -3,6 +3,7 @@
 // Колонки фильтруются в браузере (в снимке все инциденты групп), а «всего по фильтру» и список
 // по всем тысячам — сервер (GET /api/search, параметры — toParams).
 import { esc } from "./format.js";
+import { aiEnabled } from "./ai-mode.js";
 
 const KEY = "mi-dashboard:filters";
 const HOUR = 3600_000;
@@ -36,6 +37,13 @@ export function isDup(inc) {
 let f = load();
 let onChange = () => {};
 let lastOpts = "";
+let allowAI = true;
+
+export function syncFilterMode(snap) {
+  const changed = allowAI !== aiEnabled(snap);
+  allowAI = aiEnabled(snap);
+  return changed && f.risk;
+}
 
 function load() {
   try { return { ...EMPTY, ...JSON.parse(localStorage.getItem(KEY) || "{}") }; } catch { return { ...EMPTY }; }
@@ -45,14 +53,14 @@ function save() {
 }
 
 export function isActiveFilter() {
-  return Object.keys(EMPTY).some((k) => f[k] !== EMPTY[k]);
+  return Object.keys(EMPTY).some((k) => (k !== "risk" || allowAI) && f[k] !== EMPTY[k]);
 }
 
 // Предикат для инцидента
 export function makePredicate(snap, now, me) {
   if (!isActiveFilter()) return null;
   const c = { snap, now, me, unacked: new Set((snap.alerts || []).filter((a) => !a.taken_by).map((a) => a.incident_id)) };
-  const on = Object.keys(TOGGLES).filter((k) => f[k]);
+  const on = Object.keys(TOGGLES).filter((k) => f[k] && (k !== "risk" || allowAI));
   return (inc) => {
     if (!inc) return false;
     if (f.product && inc.product !== f.product) return false;
@@ -83,7 +91,7 @@ export function toParams(me) {
   if (f.burning) p.burning = 1;
   if (f.unacked) p.untaken = 1;
   if (f.noassignee) p.unassigned = 1;
-  if (f.risk) p.risk_high = 1;
+  if (allowAI && f.risk) p.risk_high = 1;
   if (f.dups) p.duplicates = 1;
   if (f.fresh) p.new_hour = 1;
   return p;
@@ -92,7 +100,7 @@ export function toParams(me) {
 // Подпись фильтров для заголовка списка: «Зеркальце · просроченные»
 export function describe() {
   const parts = [f.product, f.team, f.person && f.person.slice(2).split(" (")[0]].filter(Boolean);
-  for (const [k, t] of Object.entries(TOGGLES)) if (f[k]) parts.push(t.label.toLowerCase());
+  for (const [k, t] of Object.entries(TOGGLES)) if (f[k] && (k !== "risk" || allowAI)) parts.push(t.label.toLowerCase());
   if (f.stype) parts.push(f.stype === "client" ? "клиентские" : "внутренние");
   return parts.join(" · ");
 }
@@ -112,7 +120,7 @@ export function mountFilters(el, handlers) {
     <div class="fl-more">
       <button class="fl-chip" data-act="more">Ещё ▾</button>
       <div class="fl-menu hidden">
-        ${Object.entries(TOGGLES).filter(([, t]) => t.more).map(([k, t]) => `<label><input type="checkbox" data-t="${k}"> ${esc(t.label)} <small>${esc(t.hint)}</small></label>`).join("")}
+        ${Object.entries(TOGGLES).filter(([, t]) => t.more).map(([k, t]) => `<label data-filter="${k}"><input type="checkbox" data-t="${k}"> ${esc(t.label)} <small>${esc(t.hint)}</small></label>`).join("")}
         <div class="fl-menu-sep">Тип сервиса</div>
         <label><input type="radio" name="stype" value=""> все</label>
         <label><input type="radio" name="stype" value="client"> клиентские</label>
@@ -142,6 +150,8 @@ function set(k, v) {
 
 // Обновить списки, состояние чипов и счётчики «12 из 83 в группах · всего 340», «ещё N вне групп»
 export function renderFilters(el, snap, shown, total, serverTotal) {
+  el.querySelector('[data-filter="risk"]').classList.toggle("hidden", !allowAI);
+  el.querySelector('[data-filter="dups"] small').textContent = allowAI ? TOGGLES.dups.hint : "мастер, дубль или совпадение по правилам";
   const groupIds = new Set(snap.groups.flatMap((g) => g.ids));
   const incs = [...groupIds].map((id) => snap.incidents[id]).filter(Boolean);
   const uniq = (xs) => [...new Set(xs.filter(Boolean))].sort((a, b) => a.localeCompare(b, "ru"));
@@ -169,7 +179,7 @@ export function renderFilters(el, snap, shown, total, serverTotal) {
   el.querySelectorAll(".fl-menu input[name=stype]").forEach((i) => (i.checked = i.value === f.stype));
 
   // включённые фильтры из «Ещё» — видны чипами с крестиком
-  const extra = Object.entries(TOGGLES).filter(([k, t]) => t.more && f[k]).map(([k, t]) => [k, t.label]);
+  const extra = Object.entries(TOGGLES).filter(([k, t]) => t.more && f[k] && (k !== "risk" || allowAI)).map(([k, t]) => [k, t.label]);
   if (f.stype) extra.push(["stype", f.stype === "client" ? "Клиентские" : "Внутренние"]);
   const box = el.querySelector(".fl-extra");
   box.innerHTML = extra.map(([k, l]) => `<button class="fl-chip active" data-x="${k}" title="убрать">${esc(l)} ✕</button>`).join("");

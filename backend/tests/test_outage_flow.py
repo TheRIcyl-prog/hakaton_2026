@@ -103,3 +103,9 @@ def test_group_actions_are_atomic_and_skip_completed_members(make_store, rules, 
     assert response.status_code == 200, response.text
     assert all(i["assignedGroupName"] == "КЦ ИТ Сеть" and "coordinator" not in i for i in saved()[:2])
     assert saved()[2:] == records[2:]
+
+    before = path.read_bytes()
+    repeated = client.post(url, json={"operation": "assign", "team": "КЦ ИТ Сеть", "by": "Ольга",
+                                      "expected_hashes": hashes(response.json())})
+    assert repeated.status_code == 400
+    assert path.read_bytes() == before

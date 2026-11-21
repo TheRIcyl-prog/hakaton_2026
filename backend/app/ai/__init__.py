@@ -38,17 +38,26 @@ ADVANCED_PARTS = ("route", "risk")
 _worker: LLMWorker | None = None
 _history = dyn_mod.History(None)
 _feedback = feedback_mod.FeedbackStore(None)
-_status = {"provider": "rules", "state": "off", "label": "ИИ: правила (GigaChat выключен)", "error": None}
+_RULES_STATUS = {"provider": "rules", "state": "off", "label": "ИИ: правила (GigaChat выключен)", "error": None}
+_status = _RULES_STATUS
 _dup_groups: list[dict] = []
 _outage_candidates: list[dict] = []
 
 
 def setup(*, feedback_path: Path | None = None) -> None:
-    """История изменений — на диск всегда; GigaChat — если LLM_PROVIDER=gigachat и есть ключ."""
+    """MVP starts with AI off. Rules and GigaChat are explicit opt-in modes."""
     global _worker, _status, _history, _feedback
+    _worker = None
+    mode = os.getenv("LLM_PROVIDER", "off").strip().lower()
+    if mode not in ("rules", "gigachat"):
+        _status = {"provider": "off", "state": "off", "label": "ИИ выключен", "error": None}
+        _history = dyn_mod.History(None)
+        _feedback = feedback_mod.FeedbackStore(None)
+        return
+    _status = _RULES_STATUS
     _history = dyn_mod.History(ROOT / "cache" / "ai_history.json")
     _feedback = feedback_mod.FeedbackStore(feedback_path or ROOT / "cache" / "ai_feedback.json")
-    if os.getenv("LLM_PROVIDER", "rules").lower() != "gigachat":
+    if mode != "gigachat":
         return
     from .gigachat import GigaChatClient, GigaChatError
 
@@ -77,8 +86,9 @@ def setup(*, feedback_path: Path | None = None) -> None:
 def reset(worker: LLMWorker | None = None, history: dyn_mod.History | None = None, *,
           feedback_path: Path | None = None) -> None:
     """Для тестов: чистое состояние, с памятью на диске только по явному пути."""
-    global _worker, _history, _feedback, _dup_groups, _outage_candidates
+    global _worker, _history, _feedback, _dup_groups, _outage_candidates, _status
     _worker = worker
+    _status = _RULES_STATUS
     _history = history or dyn_mod.History(None)
     _feedback = feedback_mod.FeedbackStore(feedback_path)
     _dup_groups = []
@@ -137,6 +147,13 @@ def _events_source(refs):
 def enrich(incidents: dict[str, dict], now: datetime, rules: Rules, refs=None) -> None:
     """refs — справочники бэкенда (backend/app/refs.py); из них ИИ берёт только историю изменений."""
     global _dup_groups, _outage_candidates
+    if _status["provider"] == "off":
+        # Keep deterministic outage grouping available to the coordinator in MVP mode.
+        _dup_groups = []
+        _outage_candidates = outage_mod.find_candidates(incidents)
+        for inc in incidents.values():
+            inc.pop("ai", None)
+        return
     at = _real_now()
     idx = index_mod.build(incidents, rules)
     events_of = _events_source(refs)

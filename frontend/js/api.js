@@ -69,16 +69,19 @@ export const api = {
   queue: (by, signal) => send("GET", `/api/queue${by ? `?by=${encodeURIComponent(by)}` : ""}`, undefined, { signal, cache: "no-store" }),
   queuePreference: (by, id, operation) => send("POST", "/api/queue/preferences", { by, id, operation }),
   // «Взять в работу» снимает тревогу у всех (кнопки «Принял» нет). Уже у другого → 409 с data.coordinator.
-  // expected_hash не шлём: «взять» не меняет полей инцидента, конфликт тут только мешал бы.
-  claim: (id, force) => send("POST", `/api/incidents/${encodeURIComponent(id)}/claim`, { by: getMe(), force: force || undefined }),
+  // При перехвате привязываем подтверждение к версии, которую видел координатор.
+  claim: async (id, force, expected_hash) => {
+    if (force && !expected_hash) throw new Error("Обновите карточку перед перехватом инцидента");
+    return send("POST", `/api/incidents/${encodeURIComponent(id)}/claim`, { by: getMe(), force: force || undefined, expected_hash });
+  },
   release: (id) => send("DELETE", `/api/incidents/${encodeURIComponent(id)}/claim?by=${encodeURIComponent(getMe())}`),
   // expected_hash: инцидент изменился, пока координатор смотрел → 409 {conflict, changes}, правка не сохраняется
   assign: (id, team, comment, assignee, hash) => send("POST", `/api/itsm/${encodeURIComponent(id)}/assign`, { team, comment, assignee, by: getMe(), expected_hash: hash || undefined }),
   state: (id, state_id, comment, reason, expected_hash) => send("POST", `/api/itsm/${encodeURIComponent(id)}/state`, { state_id, comment, reason, expected_hash, by: getMe() }),
-  priority: (id, priority_id, recalc_deadline, comment) => send("POST", `/api/itsm/${encodeURIComponent(id)}/priority`, { priority_id, recalc_deadline, comment, by: getMe() }),
-  deadline: (id, deadline, comment) => send("POST", `/api/itsm/${encodeURIComponent(id)}/deadline`, { deadline, comment, by: getMe() }),
-  comment: (id, text) => send("POST", `/api/itsm/${encodeURIComponent(id)}/comment`, { text, by: getMe() }),
-  escalate: (id, comment) => send("POST", `/api/itsm/${encodeURIComponent(id)}/escalate`, { comment, by: getMe() }),
+  priority: (id, priority_id, recalc_deadline, comment, expected_hash) => send("POST", `/api/itsm/${encodeURIComponent(id)}/priority`, { priority_id, recalc_deadline, comment, expected_hash, by: getMe() }),
+  deadline: (id, deadline, comment, expected_hash) => send("POST", `/api/itsm/${encodeURIComponent(id)}/deadline`, { deadline, comment, expected_hash, by: getMe() }),
+  comment: (id, text, expected_hash) => send("POST", `/api/itsm/${encodeURIComponent(id)}/comment`, { text, expected_hash, by: getMe() }),
+  escalate: (id, comment, expected_hash) => send("POST", `/api/itsm/${encodeURIComponent(id)}/escalate`, { comment, expected_hash, by: getMe() }),
   confirmDups: (master_id, ids) => send("POST", "/api/duplicates/confirm", { master_id, ids, by: getMe() }),
   confirmOutage: (candidate_id) => send("POST", "/api/outages/confirm", { candidate_id, by: getMe() }),
   outageCandidate: (id) => send("GET", `/api/outage-candidates/${encodeURIComponent(id)}`),

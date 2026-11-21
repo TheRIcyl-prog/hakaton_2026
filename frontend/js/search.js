@@ -4,6 +4,8 @@ import { esc, fmtWhen, plural } from "./format.js";
 import { cardTitle, ownerOf } from "./render.js";
 
 const PAGE = 100;
+let useAI = true;
+export function setAiEnabled(enabled) { useAI = enabled; }
 
 // state: {open, title, params, items, total, offset, loading, error, sel}
 const st = { open: false, title: "", params: null, items: [], total: 0, loading: false, error: "", sel: -1, reqId: 0 };
@@ -88,7 +90,7 @@ export function selectedResult() {
 }
 
 function row(inc, i, nowMs, selectedId) {
-  const t = cardTitle(inc);
+  const t = cardTitle(inc, useAI);
   const owner = ownerOf(inc, null);
   const active = inc.state_kind === "active";
   const timer = active && inc.deadline

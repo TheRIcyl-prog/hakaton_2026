@@ -12,6 +12,7 @@ import { mountQueue } from "./queue.js";
 import { mountCardSettings } from "./card-settings.js";
 import { mountColumnSettings } from "./column-settings.js";
 import { openIncidentStatus } from "./incident-status.js";
+import { aiEnabled } from "./ai-mode.js";
 
 const HIGHLIGHT_MS = 15000;
 const VIEW_KEY = "mi-dashboard:view";
@@ -70,6 +71,9 @@ const refreshSnapshot = startPolling(
     if (open && !snap.incidents[open.id]) state.extra.set(open.id, open);
     for (const [id, result] of statusResults) if (!result.awaiting) statusResults.delete(id);
     state.snap = snap;
+    const filterChanged = F.syncFilterMode(snap);
+    if (filterChanged) { totalReq++; state.serverTotal = null; }
+    S.setAiEnabled(aiEnabled(snap));
     state.offsetMs = Date.parse(snap.now) - Date.now();
     if (state.feedSeenSeq === null || snap.last_event_seq < state.feedSeenSeq) state.feedSeenSeq = snap.last_event_seq;
     const fresh = processEvents(snap, { toast: R.toast, notify, me: getMe(), quiet: !state.started });
@@ -84,6 +88,7 @@ const refreshSnapshot = startPolling(
     }
     if (fresh.some((e) => !e.alert && CHANGE_TYPES.has(e.type))) Sound.playTick();
     renderAll();
+    if (filterChanged && state.listMode === "all") openList("all");
     queue.refresh();
     onServerChange();
   },
@@ -193,6 +198,8 @@ function renderMain() {
   if (!snap) return;
   const now = nowMs();
   ui.cardFields = cardSettings.fields();
+  ui.aiEnabled = aiEnabled(snap);
+  cardSettings.setAiEnabled(ui.aiEnabled);
   ui.columns = columnSettings.settings(snap.groups);
   ui.predicate = F.makePredicate(snap, now, getMe());
   ui.selected = state.openId;
@@ -305,32 +312,44 @@ async function act(fn, okText) {
 }
 
 // «Взять в работу»: тревога снимается у всех. Уже у другого → предложить забрать себе.
-async function doClaim(id, force) {
+async function doClaim(id, force, hash) {
   if (needName()) return;
   try {
-    await api.claim(id, force);
+    await api.claim(id, force, hash);
     R.toast(force ? "Забрали себе в работу" : "Взято в работу");
+    refreshSnapshot();
   } catch (e) {
     const who = e.status === 409 && e.data && e.data.coordinator;
     const name = who && (who.name || who.by || who);
-    if (name && !force && confirm(`Инцидент уже в работе: ${name}. Забрать себе?`)) return doClaim(id, true);
-    if (!name) R.toast(`⚠ ${e.message}`, "bad");
+    if (name && !force && e.data.hash && confirm(`Инцидент уже в работе: ${name}. Забрать себе?`)) {
+      return doClaim(id, true, e.data.hash);
+    }
+    if (!name || force || !e.data.hash) R.toast(`⚠ ${e.message}`, "bad");
+    if (force || e.status === 409) refreshSnapshot();
   }
 }
 const alertHandlers = { claim: (id) => doClaim(id), open: (id) => openDrawer(id) };
 function doTransfer(id) {
   if (needName()) return;
   const inc = getInc(id);
-  if (inc) openTransfer(inc, state.snap, { copy, onDone: (t) => R.toast(`✔ ${t}`), reopen: () => doTransfer(id) });
+  if (inc) openTransfer(inc, state.snap, {
+    copy, onDone: (message) => { R.toast(`✔ ${message}`); refreshSnapshot(); },
+    reopen: async () => {
+      await refreshSnapshot();
+      if (!state.snap.incidents[id]) await fetchExtra(id);
+      if (document.getElementById("modal").classList.contains("hidden")) doTransfer(id);
+    },
+  });
 }
 function doEscalate(id, draft) {
   if (needName()) return;
   const inc = getInc(id);
-  if (!draft) {
+  if (!aiEnabled(state.snap)) draft = null;
+  else if (!draft) {
     const a = (state.snap.actions || []).find((x) => x.incident_id === id && x.kind === "escalate");
     draft = a ? a.draft : null;
   }
-  if (inc) openEscalate(inc, draft, { copy, onDone: (t) => R.toast(`✔ ${t}`) });
+  if (inc) openEscalate(inc, draft, { copy, onDone: (t) => { R.toast(`✔ ${t}`); refreshSnapshot(); } });
 }
 
 async function syncStatus(inc) {
@@ -374,7 +393,7 @@ const drawerHandlers = {
   copy,
   open: (id) => openDrawer(id),
   get me() { return getMe(); },
-  claim: (id, force) => doClaim(id, force),
+  claim: (id, force, hash) => doClaim(id, force, hash),
   release: (id) => act(() => api.release(id), "Отпустили — инцидент снова свободен"),
   confirmDups: (inc) => {
     const d = inc.ai && inc.ai.duplicates;

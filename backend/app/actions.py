@@ -95,7 +95,7 @@ def build_actions(incidents: dict[str, dict], now: datetime) -> list[dict]:
                 reason = route["reason"]
             else:
                 title = "Определить команду и передать"
-                reason = "похожих случаев в выгрузке нет — выберите команду вручную"
+                reason = "выберите команду вручную" if not inc.get("ai") else "похожих случаев в выгрузке нет — выберите команду вручную"
             actions.append({
                 "id": f"route:{inc['id']}",
                 "kind": "route",

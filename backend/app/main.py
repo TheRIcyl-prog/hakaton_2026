@@ -142,7 +142,7 @@ class By(BaseModel):
 
 
 class TakeBody(By):
-    force: bool = False                # забрать у другого координатора
+    force: bool = False                # Requires expected_hash when true.
 
 
 @app.post("/api/incidents/{inc_id}/claim")
@@ -151,9 +151,8 @@ def claim(inc_id: str, body: TakeBody):
 
 
 @app.delete("/api/incidents/{inc_id}/claim")
-def release(inc_id: str, by: str = "", expected_hash: str | None = None):
-    # by — query-параметр (у DELETE тела обычно нет); старый фронт его не шлёт — тогда «координатор»
-    return _run(inc_id, lambda: itsm.release(inc_id, by or "координатор", expected_hash))
+def release(inc_id: str, by: str, expected_hash: str | None = None):
+    return _run(inc_id, lambda: itsm.release(inc_id, by, expected_hash))
 
 
 # ---------- мини-ITSM: действия пишутся в файл инцидентов ----------
@@ -220,7 +219,7 @@ def itsm_deadline(inc_id: str, b: DeadlineBody):
 
 @app.post("/api/itsm/{inc_id}/comment")
 def itsm_comment(inc_id: str, b: CommentBody):
-    return _run(inc_id, lambda: itsm.comment(inc_id, b.text, b.by))
+    return _run(inc_id, lambda: itsm.comment(inc_id, b.text, b.by, b.expected_hash))
 
 
 @app.post("/api/itsm/{inc_id}/escalate")

@@ -13,8 +13,8 @@ from .outages import OutageCandidate
 
 DEADLINE_REMINDER = timedelta(minutes=15)
 COMPACT_FIELDS = ("id", "title", "product", "deadline", "priority_level", "itsm_url")
-ORDER = {"claim": 0, "route": 1, "escalate": 2, "deadline": 2, "outage": 3,
-         "dynamics": 4, "aftermath": 5, "recurrence": 6}
+ORDER = {"claim": 0, "route": 1, "outage": 2, "escalate": 3,
+         "dynamics": 4, "aftermath": 5, "deadline": 6, "recurrence": 7}
 
 
 def _owner(inc: dict) -> str:

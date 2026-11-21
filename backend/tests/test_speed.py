@@ -9,6 +9,9 @@ import sys
 import time
 from datetime import datetime, timezone
 
+import pytest
+
+from backend.app import ai
 from backend.app.clock import Clock
 from backend.app.config import ROOT, Settings
 from backend.app.itsm import Itsm
@@ -25,7 +28,10 @@ def _write(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def test_5000_edit_to_snapshot_under_1s(tmp_path, rules):
+@pytest.mark.parametrize("provider", ["off", "rules"])
+def test_5000_edit_to_snapshot_under_1s(tmp_path, rules, monkeypatch, provider):
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    ai.setup(feedback_path=tmp_path / "feedback.json")
     data = make_demo.build(datetime.now(timezone.utc).replace(microsecond=0), N)
     f = tmp_path / "incidents.json"
     _write(f, data)

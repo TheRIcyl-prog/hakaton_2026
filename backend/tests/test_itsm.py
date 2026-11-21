@@ -183,7 +183,7 @@ def test_take_conflicts_and_release_rearms_alert(linked):
     with pytest.raises(ItsmError, match="уже в работе у Ольга") as e:
         itsm.take("K", "Сергей")
     assert e.value.status == 409
-    itsm.take("K", "Сергей", force=True)
+    itsm.take("K", "Сергей", expected_hash=e.value.detail["hash"], force=True)
     assert raw(f, "K")["coordinator"]["name"] == "Сергей"
     itsm.release("K", "Сергей")
     assert "coordinator" not in raw(f, "K")

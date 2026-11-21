@@ -60,6 +60,11 @@ export function mountCardSettings(dialog, { getName, onChange }) {
   });
   return {
     fields() { sync(); return fields; },
+    setAiEnabled(enabled) {
+      for (const input of controls) {
+        if (input.name === "summary" || input.name === "ai") input.parentElement.classList.toggle("hidden", !enabled);
+      }
+    },
     open() { sync(); dialog.showModal(); },
   };
 }

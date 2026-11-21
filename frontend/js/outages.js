@@ -1,4 +1,5 @@
 import { api } from "./api.js";
+import { aiEnabled, modelOutage, outageTitle } from "./ai-mode.js";
 import { esc, plural } from "./format.js";
 
 const SOURCES = { rules: "Правила сопоставления", gigachat: "GigaChat", cache: "GigaChat (кэш)" };
@@ -30,7 +31,7 @@ export function renderWallOutages(el, snap, alarmIds) {
     ${affected.size ? `<strong class="outage-alarm-label">! Критические в сбоях · ${affected.size} не взято</strong>` : ""}</div>
     <div class="wall-outages-grid">${entries.slice(0, 4).map(({ outage, alarm }) => `
       <article class="wall-outage${outage.status === "resolved" ? " resolved" : ""}${alarm ? " critical" : ""}">
-        <strong title="${esc(outage.name)}">${esc(outage.name)}</strong>
+        <strong title="${esc(outageTitle(outage, aiEnabled(snap)))}">${esc(outageTitle(outage, aiEnabled(snap)))}</strong>
         <div class="wall-outage-meta"><span>${countLabel(outage.incident_ids.length)} · ${outage.products.length} ${plural(outage.products.length, "продукт", "продукта", "продуктов")}</span>
           ${deadline(outage)}</div>
       </article>`).join("")}</div>`;
@@ -72,12 +73,14 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
     if (detail?.outage) composition = members(outage, detail, candidate);
     else if (detail?.error) composition = `<p class="outage-error">${esc(detail.error)}</p><button class="btn small" data-retry>Повторить</button>`;
     else if (detail) composition = `<p class="outage-description">Загружаем состав…</p>`;
-    const source = SOURCES[outage.source];
+    const useAI = aiEnabled(snap);
+    const hideModelText = modelOutage(outage, useAI);
+    const source = hideModelText ? null : SOURCES[outage.source];
     const key = `${candidate ? "candidate" : "confirmed"}:${outage.id}`;
     return `<article class="outage-card" data-id="${esc(outage.id)}" data-kind="${candidate ? "candidate" : "confirmed"}">
-      <div class="outage-card-head"><h3>${esc(outage.name)}</h3><div class="outage-deadline">${deadline(outage)}</div></div>
+      <div class="outage-card-head"><h3>${esc(outageTitle(outage, useAI))}</h3><div class="outage-deadline">${deadline(outage)}</div></div>
       <div class="outage-description">${countLabel(outage.incident_ids.length)}${outage.products.length ? ` · ${esc(outage.products.join(", "))}` : ""}</div>
-      ${outage.reason ? `<p>${esc(outage.reason)}</p>` : ""}
+      ${!hideModelText && outage.reason ? `<p>${esc(outage.reason)}</p>` : ""}
       ${source ? `<div class="outage-description">Источник · ${source}</div>` : ""}
       <details data-key="${esc(key)}"><summary>Состав · ${detail?.outage?.incident_ids.length ?? outage.incident_ids.length}</summary>${composition}
         ${!candidate && detail?.outage?.status === "active" ? outageControls() : ""}</details>

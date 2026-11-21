@@ -1,6 +1,7 @@
 // Диалоги АРМ: передача в команду и подтверждение эскалации.
 import { esc } from "./format.js";
 import { api } from "./api.js";
+import { aiEnabled } from "./ai-mode.js";
 
 const modal = () => document.getElementById("modal");
 
@@ -17,10 +18,11 @@ function conflictText(ex) {
 }
 
 export function openTransfer(inc, snap, { onDone, copy, reopen }) {
-  const route = inc.ai && inc.ai.route;
+  const useAI = aiEnabled(snap);
+  const route = useAI && inc.ai?.route?.team ? inc.ai.route : null;
   const pct = (x) => x.confidence_text || `${Math.round((x.score ?? x.confidence ?? 0) * 100)}%`;
   const suggested = route ? [{ team: route.team, label: pct(route) }, ...(route.alternatives || []).map((a) => ({ team: a.team, label: pct(a) }))] : [];
-  const action = (snap.actions || []).find((a) => a.incident_id === inc.id && a.kind === "route");
+  const action = useAI && (snap.actions || []).find((a) => a.incident_id === inc.id && a.kind === "route");
   const others = (snap.teams || []).filter((t) => t !== inc.team && !suggested.some((s) => s.team === t));
   const first = suggested.find((s) => s.team !== inc.team);
 
@@ -32,14 +34,14 @@ export function openTransfer(inc, snap, { onDone, copy, reopen }) {
         <div class="team-options">${suggested.filter((s) => s.team !== inc.team).map((s, i) => `
           <label class="team-option"><input type="radio" name="team" value="${esc(s.team)}" ${s === first ? "checked" : ""}>
             <span><b>${esc(s.team)}</b><small>${esc(s.label)}${i === 0 && route && route.reason ? " · " + esc(route.reason) : ""}</small></span></label>`).join("")}
-        </div>` : `<div class="modal-sub">Похожих случаев нет — выберите команду из списка.</div>`}
-      <div class="modal-label">Или другая команда</div>
-      <select name="other"><option value="">— выбрать из списка —</option>${others.map((t) => `<option>${esc(t)}</option>`).join("")}</select>
+        </div>` : ""}
+      <label for="transfer-team" class="modal-label">${first ? "Или другая команда" : "Команда"}</label>
+      <select id="transfer-team" name="other"${first ? "" : " required"}><option value="">— выбрать из списка —</option>${others.map((t) => `<option>${esc(t)}</option>`).join("")}</select>
       <div class="modal-label">Исполнитель (необязательно)</div>
       <input name="assignee" placeholder="ФИО инженера, если известен" autocomplete="off">
       <div class="modal-label">Комментарий в журнал</div>
       <textarea name="comment" rows="2" placeholder="Например: подтвердили по телефону, дежурный в курсе"></textarea>
-      <label class="check"><input type="checkbox" name="copy" checked> Скопировать текст передачи для чата/почты</label>
+      ${action?.draft ? '<label class="check"><input type="checkbox" name="copy" checked> Скопировать текст передачи для чата/почты</label>' : ""}
       <div class="modal-error hidden"></div>
       <div class="modal-btns"><button type="button" class="btn" data-act="cancel">Отмена</button><button class="btn btn-primary">Передать</button></div>
     </form>`;
@@ -52,13 +54,16 @@ export function openTransfer(inc, snap, { onDone, copy, reopen }) {
     const team = form.other.value || (form.querySelector("input[name=team]:checked") || {}).value;
     const err = form.querySelector(".modal-error");
     if (!team) { err.textContent = "Выберите команду"; err.classList.remove("hidden"); return; }
+    const button = e.submitter || form.querySelector(".btn-primary");
+    if (button.disabled) return;
+    button.disabled = true;
     try {
-      if (form.copy.checked && action) {
-        const text = route ? action.draft.split(route.team).join(team) : action.draft.replace("<команда>", team);
-        await copy(text);
-      }
       await api.assign(inc.id, team, form.comment.value.trim() || null, form.assignee.value.trim() || null, inc.hash);
-      closeModal();
+      if (form.copy?.checked && action?.draft) {
+        const text = route ? action.draft.split(route.team).join(team) : action.draft.replace("<команда>", team);
+        await copy(text).catch(() => {});
+      }
+      if (form.isConnected) closeModal();
       onDone(`Передан в «${team}»`);
     } catch (ex) {
       err.textContent = conflictText(ex);
@@ -69,6 +74,8 @@ export function openTransfer(inc, snap, { onDone, copy, reopen }) {
         err.append(" ", b);
       }
       err.classList.remove("hidden");
+    } finally {
+      button.disabled = false;
     }
   };
   setTimeout(() => (form.querySelector("input[name=team]:checked") || form.other).focus(), 50);
@@ -91,15 +98,20 @@ export function openEscalate(inc, draft, { onDone, copy }) {
   form.querySelector("[data-act=cancel]").onclick = closeModal;
   form.onsubmit = async (e) => {
     e.preventDefault();
+    const button = e.submitter || form.querySelector(".btn-primary");
+    if (button.disabled) return;
+    button.disabled = true;
     try {
-      if (draft && form.copy && form.copy.checked) await copy(draft);
-      await api.escalate(inc.id, form.comment.value.trim() || null);
-      closeModal();
+      await api.escalate(inc.id, form.comment.value.trim() || null, inc.hash);
+      if (draft && form.copy?.checked) await copy(draft).catch(() => {});
+      if (form.isConnected) closeModal();
       onDone("Эскалация записана в журнал");
     } catch (ex) {
       const err = form.querySelector(".modal-error");
       err.textContent = ex.message;
       err.classList.remove("hidden");
+    } finally {
+      button.disabled = false;
     }
   };
 }

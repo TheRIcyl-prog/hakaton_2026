@@ -25,8 +25,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .adapter import (adapt_all, content_hash, iso, norm_team, outage_excluded_with, outage_link, parse_dt, resolve_priority_id,
-                      resolve_state_id, to_str, unwrap)
+from .adapter import (adapt_all, content_hash, escalation_scope_changed, iso, norm_team, outage_excluded_with,
+                      outage_link, parse_dt, resolve_priority_id, resolve_state_id, to_int, to_str, unwrap)
 from .config import Rules
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -117,13 +117,16 @@ class Itsm:
         lock = self.store.write_lock if self.store else _write_lock
         with lock:
             data = self._load()
-            idx = next((i for i, r in enumerate(data) if isinstance(r, dict) and str(r.get("id", "")).strip() == inc_id), None)
+            # The adapter also uses the last record when the file contains duplicate IDs.
+            idx = next((i for i in range(len(data) - 1, -1, -1)
+                        if isinstance(data[i], dict) and to_str(data[i].get("id")) == inc_id), None)
             if idx is None:
                 raise ItsmError("инцидент не найден в файле", 404)
-            if expected_hash and content_hash(data[idx]) != expected_hash:
-                changes = self.store.conflict_changes(inc_id, expected_hash) if self.store else []
-                raise ItsmError("инцидент только что изменили — обновите карточку, правка не сохранена", 409,
-                                {"conflict": True, "hash": content_hash(data[idx]), "changes": changes})
+            if expected_hash is not None and (current_hash := content_hash(data[idx])) != expected_hash:
+                current = self.store.incident(inc_id) if self.store else None
+                changes = (self.store.conflict_changes(inc_id, expected_hash)
+                           if current and current["hash"] == current_hash else [])
+                raise _version_conflict(current_hash, changes)
             rec = copy.deepcopy(data[idx])  # прошлую версию не трогаем: Store сравнивает старую и новую запись
             now = self.now_fn()
             action, text, extra = _unpack(mutate(rec, now))
@@ -348,7 +351,10 @@ class Itsm:
                     rec["coordinator"] = {"name": by, "at": _fmt(now)}
                     action, message, details = "take", "взял в работу", {}
                 elif operation == "assign":
-                    action, message, details = _assign_record(rec, now, team, None, comment)
+                    if norm_team(rec.get("assignedGroupName")) == norm_team(team):
+                        continue
+                    action, message, details = _assign_record(rec, now, team, None, comment,
+                                                              resolve_state_id(rec, self.rules))
                 else:
                     action, message, details = self._escalate_record(rec, now, comment)
                 log = rec.get("workLog") if isinstance(rec.get("workLog"), list) else []
@@ -358,19 +364,24 @@ class Itsm:
                 changed = True
             if changed:
                 self._commit(updated, by)
+            elif operation == "assign":
+                raise ItsmError("все активные заявки уже в этой команде")
             return self.store.outage(outage_id, include_incidents=True) or {}
 
     # ---------- «Взять в работу» / «Отпустить» (наше поле coordinator) ----------
     def take(self, inc_id: str, by: str, expected_hash: str | None = None, force: bool = False) -> dict:
+        if force and not (expected_hash or "").strip():
+            raise ItsmError("для перехвата обновите карточку и передайте expected_hash")
+
         def mutate(rec: dict, now: datetime):
-            if _int(rec.get("stateId")) in (7, 10):
+            if resolve_state_id(rec, self.rules) in (7, 10):
                 raise ItsmError("инцидент уже решён — брать в работу нечего")
-            cur = rec.get("coordinator") if isinstance(rec.get("coordinator"), dict) else None
-            cur_name = (cur or {}).get("name")
-            if cur_name and cur_name == by.strip():
-                raise ItsmError(f"инцидент уже в работе у вас", 409)
+            cur_name = _coordinator_name(rec)
+            if cur_name and cur_name.casefold() == by.strip().casefold():
+                raise ItsmError("инцидент уже в работе у вас", 409)
             if cur_name and not force:
-                raise ItsmError(f"инцидент уже в работе у {cur_name}", 409, {"coordinator": cur_name})
+                raise ItsmError(f"инцидент уже в работе у {cur_name}", 409,
+                                {"coordinator": cur_name, "hash": content_hash(rec)})
             rec["coordinator"] = {"name": by.strip(), "at": _fmt(now)}
             return "take", "взял в работу" + (f" (был у {cur_name})" if cur_name else "")
 
@@ -378,12 +389,11 @@ class Itsm:
 
     def release(self, inc_id: str, by: str, expected_hash: str | None = None) -> dict:
         def mutate(rec: dict, now: datetime):
-            cur = rec.get("coordinator") if isinstance(rec.get("coordinator"), dict) else None
-            if not cur:
+            if not _coordinator_name(rec):
                 raise ItsmError("инцидент никто не брал в работу", 409)
+            _check_coordinator(rec, by)
             rec.pop("coordinator", None)
-            who = cur.get("name") or "—"
-            return "release", "отпустил" if who == by.strip() else f"снял с {who}"
+            return "release", "отпустил"
 
         return self._update(inc_id, by, mutate, expected_hash)
 
@@ -395,12 +405,15 @@ class Itsm:
             raise ItsmError("не выбрана команда")
 
         def mutate(rec: dict, now: datetime):
-            sid = _int(rec.get("stateId"))
+            _check_coordinator(rec, by)
+            sid = resolve_state_id(rec, self.rules)
             if sid == 10:
                 raise ItsmError("инцидент закрыт — переназначить нельзя, заведите новый")
             if sid == 7:
                 raise ItsmError("инцидент завершён — сначала верните его в работу")
-            return _assign_record(rec, now, team, assignee, comment)
+            if norm_team(rec.get("assignedGroupName")) == norm_team(team):
+                raise ItsmError("инцидент уже в этой команде — выберите другую")
+            return _assign_record(rec, now, team, assignee, comment, sid)
 
         return self._update(inc_id, by, mutate, expected_hash)
 
@@ -437,7 +450,7 @@ class Itsm:
             raise ItsmError("неизвестный приоритет")
 
         def mutate(rec: dict, now: datetime):
-            old, old_id = rec.get("priority"), _int(rec.get("priorityId"))
+            old, old_id = rec.get("priority"), to_int(rec.get("priorityId"))
             rec["priorityId"] = priority_id
             rec["priority"] = self.rules.priorities[priority_id]["name"]
             extra = ""
@@ -467,16 +480,20 @@ class Itsm:
 
         return self._update(inc_id, by, mutate, expected_hash)
 
-    def comment(self, inc_id: str, text: str, by: str) -> dict:
+    def comment(self, inc_id: str, text: str, by: str, expected_hash: str | None = None) -> dict:
         if not text or not text.strip():
             raise ItsmError("пустой комментарий")
-        return self._update(inc_id, by, lambda rec, now: ("comment", text.strip()[:1000]))
+        return self._update(inc_id, by, lambda rec, now: ("comment", text.strip()[:1000]), expected_hash)
 
     def escalate(self, inc_id: str, by: str, comment: str | None = None, expected_hash: str | None = None) -> dict:
         def mutate(rec: dict, now: datetime):
-            if _int(rec.get("stateId")) in DONE:
+            _check_coordinator(rec, by)
+            if resolve_state_id(rec, self.rules) in DONE:
                 raise ItsmError("инцидент уже решён — эскалация не нужна")
-            return self._escalate_record(rec, now, comment)
+            action, text, details = self._escalate_record(rec, now, comment)
+            if expected_hash is None and _same_escalation(rec, text, details["escalation_scope"], self.store):
+                raise ItsmError("эта эскалация уже записана — обновите карточку", 409)
+            return action, text, details
 
         return self._update(inc_id, by, mutate, expected_hash)
 
@@ -530,11 +547,39 @@ def _unpack(res) -> tuple[str, str, dict]:
     return res[0], res[1], {}
 
 
-def _int(v: Any) -> int | None:
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return None
+def _version_conflict(current_hash: str, changes: list[dict]) -> ItsmError:
+    return ItsmError("инцидент только что изменили — обновите карточку, правка не сохранена", 409,
+                     {"conflict": True, "hash": current_hash, "changes": changes})
+
+
+def _coordinator_name(rec: dict) -> str | None:
+    coordinator = rec.get("coordinator")
+    return to_str(coordinator.get("name")) if isinstance(coordinator, dict) else None
+
+
+def _check_coordinator(rec: dict, by: str) -> None:
+    owner = _coordinator_name(rec)
+    if owner and owner.casefold() != by.strip().casefold():
+        raise ItsmError(f"инцидент уже в работе у {owner}", 409, {"coordinator": owner})
+
+
+def _same_escalation(rec: dict, text: str, scope: dict, store: Store | None) -> bool:
+    log = rec.get("workLog")
+    if not isinstance(log, list):
+        return False
+    for entry in reversed(log):
+        if not isinstance(entry, dict):
+            continue
+        if escalation_scope_changed(entry):
+            break
+        if entry.get("action") == "escalate":
+            at = parse_dt(entry.get("at"))
+            if at is None or entry.get("text") != text or entry.get("escalation_scope") != scope:
+                return False
+            return store is None or not any(escalation_scope_changed(change) and when > at
+                                            for change in store.history.get(to_str(rec["id"]))
+                                            if (when := parse_dt(change.get("at"))))
+    return False
 
 
 def _set_state(rec: dict, state_id: int) -> None:
@@ -543,12 +588,13 @@ def _set_state(rec: dict, state_id: int) -> None:
     rec["stateEnum"] = STATE_ENUM[state_id]
 
 
-def _assign_record(rec: dict, now: datetime, team: str, assignee: str | None, comment: str | None) -> tuple:
+def _assign_record(rec: dict, now: datetime, team: str, assignee: str | None, comment: str | None,
+                   state_id: int | None) -> tuple:
     old = rec.get("assignedGroupName")
     name = (assignee or "").strip()
     rec.update(assignedGroupName=team, assignedEmployee=name or None, assignedEmployeeLogin=None,
                lastAssignmentToTeamDateTime=_fmt(now))
-    if _int(rec.get("stateId")) == 2:
+    if state_id == 2:
         _set_state(rec, 0)
     coord = rec.pop("coordinator", None)
     text = f"передан: {old or '—'} → {team}" + (f" ({name})" if name else "")

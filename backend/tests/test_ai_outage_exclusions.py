@@ -51,12 +51,12 @@ def test_outage_rechecks_minimum_size_and_product_count(rules, last_product):
 def test_outage_can_use_excluded_incident_with_other_members(rules):
     run(rules, [record("A", "Продукт А", -3, outageExclusions=exclusions("X")),
                 record("B", "Продукт Б", -2), record("C", "Продукт Б", -1),
-                record("X", "Продукт А", -25)])
+                record("X", "Продукт А", -365)])
     assert [candidate["ids"] for candidate in ai.outage_candidates()] == [["A", "B", "C"]]
 
 
 def test_outage_slides_past_window_that_falls_below_threshold(rules):
-    records = [record("A", "Продукт А", -18, outageExclusions=exclusions("B", "C")),
+    records = [record("A", "Продукт А", -365, outageExclusions=exclusions("B", "C")),
                record("B", "Продукт Б", -14), record("C", "Продукт В", -5), record("D", "Продукт Б", -2)]
     run(rules, records)
     assert [candidate["ids"] for candidate in ai.outage_candidates()] == [["B", "C", "D"]]

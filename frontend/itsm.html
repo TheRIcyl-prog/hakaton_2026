@@ -55,6 +55,7 @@
   <script type="module">
     import { api, getMe, setMe } from "/js/api.js";
     import { esc } from "/js/format.js";
+    import { aiEnabled } from "/js/ai-mode.js";
 
     const id = decodeURIComponent(location.pathname.split("/").pop());
     const root = document.getElementById("root");
@@ -67,13 +68,33 @@
     const toLocalMsk = (iso) => iso ? new Date(Date.parse(iso) + 3 * 3600e3).toISOString().slice(0, 16) : "";
     const fromLocalMsk = (v) => new Date(Date.parse(v + ":00Z") - 3 * 3600e3).toISOString().replace(".000Z", "Z");
 
-    let meta = null, inc = null, lastHash = null, message = null;
+    let meta = null, inc = null, lastHash = null, message = null, useAI = false, readingMode = false;
+
+    async function readMode() {
+      if (readingMode) return;
+      readingMode = true;
+      try {
+        const response = await fetch("/api/health", { cache: "no-store", signal: AbortSignal.timeout(2000) });
+        if (!response.ok) return;
+        const enabled = aiEnabled({ ai_status: (await response.json()).ai });
+        if (enabled !== useAI) {
+          useAI = enabled;
+          if (inc) render();
+        }
+      } catch { /* keep the last known mode */ }
+      finally { readingMode = false; }
+    }
 
     async function load() {
+      readMode();
       try {
         meta = meta || await api.meta();
         const fresh = await api.incident(id);
-        if (fresh.hash !== lastHash) { inc = fresh; lastHash = fresh.hash; render(); }
+        if (fresh.hash !== lastHash) {
+          inc = fresh;
+          lastHash = fresh.hash;
+          render();
+        }
       } catch (e) {
         root.className = "err";
         root.textContent = `Инцидент ${id} не найден в текущем файле`;
@@ -84,8 +105,8 @@
       document.title = `${inc.id} · ITSM`;
       root.className = "";
       const transitions = meta.transitions[inc.state_id] || [];
-      const route = inc.ai && inc.ai.route;
-      const suggested = route ? [route.team, ...route.alternatives.map((a) => a.team)] : [];
+      const route = useAI && inc.ai?.route?.team ? inc.ai.route : null;
+      const suggested = route ? [route.team, ...(route.alternatives || []).map((a) => a.team)] : [];
       const teams = [...suggested, ...meta.teams.filter((t) => !suggested.includes(t))].filter((t) => t !== inc.team);
       const doneState = (s) => [7, 10, 20].includes(Number(s));
       root.innerHTML = `<main>
@@ -178,18 +199,18 @@
     function bind(doneState) {
       const f = (sel) => document.querySelector(sel);
       if (f("#f-assign")) f("#f-assign").onsubmit = (e) => { e.preventDefault(); const t = e.target.team.value;
-        run(() => api.assign(id, t, null, e.target.assignee.value.trim() || null), `Назначен в «${t}»`); };
+        run(() => api.assign(id, t, null, e.target.assignee.value.trim() || null, inc.hash), `Назначен в «${t}»`); };
       document.querySelectorAll("[data-state]").forEach((b) => b.onclick = () => {
         const s = Number(b.dataset.state);
-        run(() => api.state(id, s, null, doneState(s) ? f("#f-state").reason.value : null), `Статус: ${meta.states[s]}`);
+        run(() => api.state(id, s, null, doneState(s) ? f("#f-state").reason.value : null, inc.hash), `Статус: ${meta.states[s]}`);
       });
       f("#f-prio").onsubmit = (e) => { e.preventDefault();
-        run(() => api.priority(id, Number(e.target.priority.value), e.target.recalc.checked), "Приоритет сохранён"); };
+        run(() => api.priority(id, Number(e.target.priority.value), e.target.recalc.checked, null, inc.hash), "Приоритет сохранён"); };
       f("#f-deadline").onsubmit = (e) => { e.preventDefault(); if (!e.target.deadline.value) return;
-        run(() => api.deadline(id, fromLocalMsk(e.target.deadline.value)), "Срок сохранён"); };
+        run(() => api.deadline(id, fromLocalMsk(e.target.deadline.value), null, inc.hash), "Срок сохранён"); };
       f("#f-comment").onsubmit = (e) => { e.preventDefault(); const t = e.target.text.value.trim(); if (!t) return;
-        run(() => api.comment(id, t), "Комментарий добавлен"); };
-      if (f("#b-escalate")) f("#b-escalate").onclick = () => run(() => api.escalate(id, null), "Эскалация записана");
+        run(() => api.comment(id, t, inc.hash), "Комментарий добавлен"); };
+      if (f("#b-escalate")) f("#b-escalate").onclick = () => run(() => api.escalate(id, null, inc.hash), "Эскалация записана");
     }
 
     load();

@@ -5,12 +5,13 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from math import ceil
 
+from ..adapter import parse_dt
 from .exclusions import compatible_members
 from .index import Index
 from .llm import LLMWorker, Task, build_outage_prompt, model_key, outage_key
 from .text import clip, minutes_text, plural
 
-WINDOW = timedelta(minutes=15)
+WINDOW = timedelta(hours=6)
 MIN_INCIDENTS = 3
 MIN_PRODUCTS = 2
 MAX_LLM_GROUPS = 8
@@ -18,11 +19,14 @@ MAX_LLM_MEMBERS = 12
 LLM_PRIORITY = 3.8
 
 
-def find_candidates(incidents: dict[str, dict], index: Index) -> list[dict]:
+def find_candidates(incidents: dict[str, dict], index: Index | None = None) -> list[dict]:
+    created_by_id = (index.created if index is not None else
+                     {inc_id: parse_dt(inc.get("created_at")) for inc_id, inc in incidents.items()
+                      if inc["state_kind"] == "active"})
     buckets: dict[str, list[tuple[datetime, str]]] = defaultdict(list)
     for inc in incidents.values():
         code = inc.get("product_code")
-        created = index.created[inc["id"]]
+        created = created_by_id.get(inc["id"])
         if inc["state_kind"] == "active" and code and created is not None and not inc.get("outage"):
             buckets[code].append((created, inc["id"]))
 
@@ -49,7 +53,7 @@ def find_candidates(incidents: dict[str, dict], index: Index) -> list[dict]:
                 if len(kept) < len(ids):
                     product_count = len({incidents[i].get("product") for i in kept} - {None, ""})
                 if len(kept) >= MIN_INCIDENTS and product_count >= MIN_PRODUCTS:
-                    candidates.append(_candidate(kept, incidents, index, product_count))
+                    candidates.append(_candidate(kept, incidents, created_by_id, product_count))
                     counts.clear()
                     left = right
                     continue
@@ -60,13 +64,13 @@ def find_candidates(incidents: dict[str, dict], index: Index) -> list[dict]:
                     del counts[product]
             left += 1
 
-    return sorted(candidates, key=lambda c: (index.created[c["ids"][-1]], c["master_id"]), reverse=True)
+    return sorted(candidates, key=lambda c: (created_by_id[c["ids"][-1]], c["master_id"]), reverse=True)
 
 
-def _candidate(ids: list[str], incidents: dict[str, dict], index: Index, product_count: int) -> dict:
+def _candidate(ids: list[str], incidents: dict[str, dict], created: dict[str, datetime | None], product_count: int) -> dict:
     master_id = ids[0]
     code = clip(incidents[master_id]["product_code"], 55)
-    span = index.created[ids[-1]] - index.created[master_id]
+    span = created[ids[-1]] - created[master_id]
     elapsed = minutes_text(ceil(span.total_seconds() / 60))
     incident_word = plural(len(ids), "активная заявка", "активные заявки", "активных заявок")
     product_word = plural(product_count, "продукте", "продуктах", "продуктах")
@@ -117,7 +121,7 @@ def refine(candidates: list[dict], incidents: dict[str, dict], index: Index,
         products = {incidents[inc_id].get("product") for inc_id in kept} - {None, ""}
         if len(kept) < MIN_INCIDENTS or len(products) < MIN_PRODUCTS:
             continue
-        updated = _candidate(kept, incidents, index, len(products)) if excluded else dict(candidate)
+        updated = _candidate(kept, incidents, index.created, len(products)) if excluded else dict(candidate)
         updated.update(source=source, name=answer["name"] or updated["name"], reason=answer["reason"] or updated["reason"])
         refined.append(updated)
     return refined, tasks

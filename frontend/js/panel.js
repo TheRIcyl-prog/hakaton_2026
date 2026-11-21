@@ -3,6 +3,7 @@
 // действия координатора (только взять/отпустить, передать, эскалировать, комментарий) и ссылка в ITSM.
 import { esc, fmtDateTime, fmtTime, fmtWhen, plural } from "./format.js";
 import { ownerOf } from "./render.js";
+import { aiEnabled } from "./ai-mode.js";
 import { incidentLabels } from "./incident-labels.js";
 import { bindFeedback, feedbackMarkup, rememberFeedback } from "./ai-feedback.js";
 
@@ -93,7 +94,7 @@ function historyHtml(list, nowMs) {
       <div>${h.kind === "reopen" ? "вернули в работу" : `${esc(h.before ?? "—")} → ${esc(h.after ?? "—")}`}${h.by ? ` · <i>${esc(firstName(h.by))}</i>` : ""}</div></div>`).join("")}</div>`;
 }
 
-function recurrenceSection(recurrence, nowMs) {
+function recurrenceSection(recurrence, nowMs, useAI) {
   if (!recurrence) return "";
   const { count, level, suggested_team, cases } = recurrence;
   return `<section class="recurrence-history" aria-label="Прошлые случаи">
@@ -102,7 +103,7 @@ function recurrenceSection(recurrence, nowMs) {
       ? `Показано ${esc(cases.length)} из ${esc(count)} за неделю`
       : `За неделю до регистрации · ${esc(count)} ${plural(count, "случай", "случая", "случаев")}`}
       ${level === "strong" ? " · Повтор после постоянного решения" : ""}</div>
-    ${suggested_team ? `<p class="recurrence-advice">Рекомендуем передать в «${esc(suggested_team)}» по опыту прошлых случаев.</p>` : ""}
+    ${useAI && suggested_team ? `<p class="recurrence-advice">Рекомендуем передать в «${esc(suggested_team)}» по опыту прошлых случаев.</p>` : ""}
     <ul class="recurrence-cases">${cases.map((item) => `<li>
       <div><button type="button" class="linklike recurrence-link" data-open="${esc(item.id)}">${esc(item.id)}</button>${item.title ? ` · ${esc(item.title)}` : ""}</div>
       <div class="recurrence-meta">${item.resolved_at ? `Решён <time datetime="${esc(item.resolved_at)}">${esc(fmtDateTime(item.resolved_at, nowMs))} МСК</time> · ` : ""}${esc(item.team || "Команда не указана")}${item.state_reason && item.state_reason !== "Нет" ? ` · ${esc(item.state_reason)}` : ""}</div>
@@ -125,7 +126,8 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
   el.dataset.id = inc.id;
 
   const fc = inc.forecast;
-  const action = (snap.actions || []).find((a) => a.incident_id === inc.id);
+  const useAI = aiEnabled(snap);
+  const action = useAI && (snap.actions || []).find((a) => a.incident_id === inc.id);
   const claim = ownerOf(inc, snap);
   const mine = !!claim && claim.by === handlers.me;
   const alert = claim ? null : (snap.alerts || []).find((a) => a.incident_id === inc.id && !a.taken_by);
@@ -172,9 +174,9 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
     </div>
     <form class="comment-form" data-act="comment"><input name="text" placeholder="Комментарий в журнал работ…" autocomplete="off"><button class="btn small">Добавить</button></form>
 
-    ${recurrenceSection(inc.recurrence, nowMs)}
+    ${recurrenceSection(inc.recurrence, nowMs, useAI)}
 
-    ${aiSection(inc, snap)}
+    ${useAI ? aiSection(inc, snap) : ""}
 
     ${action ? `<h3>Черновик ${action.kind === "route" ? "передачи" : "эскалации"} <span class="linklike" data-act="copy">скопировать</span></h3><div class="draft">${esc(action.draft)}</div>` : ""}
 
@@ -202,7 +204,7 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
   const on = (sel, fn) => el.querySelectorAll(sel).forEach((b) => (b.onclick = fn));
   on("[data-act=close]", handlers.close);
   on("[data-act=claim]", () => handlers.claim(inc.id));
-  on("[data-act=force]", () => handlers.claim(inc.id, true));
+  on("[data-act=force]", () => handlers.claim(inc.id, true, inc.hash));
   on("[data-act=release]", () => handlers.release(inc.id));
   on("[data-act=transfer]", () => handlers.transfer(inc.id));
   on("[data-act=escalate]", () => handlers.escalate(inc.id, action && action.kind === "escalate" ? action.draft : null));

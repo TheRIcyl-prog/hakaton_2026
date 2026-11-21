@@ -4,6 +4,7 @@
 // Здесь — только звук, голос и системные уведомления (лестница эскалации).
 import { playCritical, playCoordinators, playResolved, playTick, speak } from "./sound.js";
 import { speakLeft, plural } from "./format.js";
+import { aiEnabled } from "./ai-mode.js";
 
 const MIN = 60_000;
 const REPEAT_CRITICAL_MS = MIN;      // повтор звука: критический — раз в минуту
@@ -25,7 +26,7 @@ const dupKey = (inc) => (inc && inc.ai && inc.ai.duplicates && inc.ai.duplicates
 export function computeAlerts(snap) {
   return (snap.alerts || [])
     .filter((a) => !a.taken_by && snap.incidents[a.incident_id] && !ownerName(snap.incidents[a.incident_id]))
-    .map((a) => ({ ...a, inc: snap.incidents[a.incident_id] }));
+    .map((a) => ({ ...a, inc: snap.incidents[a.incident_id], useAI: aiEnabled(snap) }));
 }
 
 // Новые события: короткий звук на «критический решён»; «уже в работе и стал критическим» —
@@ -70,7 +71,7 @@ function voiceFor(a, nowMs) {
   if (a.group === "critical") {
     return `Внимание! Критический инцидент. ${inc.product || ""}. ${inc.title || ""}. ${speakLeft(remaining(inc, nowMs))}.`;
   }
-  const route = inc.ai && inc.ai.route;
+  const route = a.useAI !== false && inc.ai?.route;
   return `На координаторов назначен инцидент. ${inc.product || ""}. ${route ? "Рекомендация: передать в " + route.team : ""}`;
 }
 

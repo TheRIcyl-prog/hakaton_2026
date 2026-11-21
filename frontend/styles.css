@@ -135,6 +135,7 @@ button { font-family: inherit; }
 .actions-empty { color: var(--dim); align-self: center; }
 .personal-queue { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .personal-queue .queue { flex: 1; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
+#queue-reminders { align-self: flex-start; margin: 8px 18px 0; }
 .queue-feedback { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 8px 18px 0; color: var(--muted); }
 .queue-feedback[hidden], .queue-feedback [hidden] { display: none; }
 .personal-queue .action { min-width: 0; overflow-wrap: anywhere; }

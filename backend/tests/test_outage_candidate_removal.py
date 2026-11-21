@@ -81,7 +81,7 @@ def test_narrowed_heuristic_group_requires_two_products_and_current_time_window(
     itsm = Itsm(path, store.rules, store.clock.now, store=store)
     assert itsm.remove_outage_candidate_incident(candidate["id"], "A", "Ольга") is None
     saved = json.loads(path.read_text(encoding="utf-8"))
-    saved[2].update(productName="Зеркальце", submitDate=iso(NOW - timedelta(minutes=60)))
+    saved[2].update(productName="Зеркальце", submitDate=iso(NOW - timedelta(hours=7)))
     write(path, saved)
     assert store.poll()
     assert store.snapshot()["outage_candidates"] == []

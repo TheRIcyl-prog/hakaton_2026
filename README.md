@@ -1,51 +1,60 @@
-# Дашборд координатора массовых инцидентов · хакатон МТС
+# Mass Incident Coordinator Dashboard
 
-## Запуск (Windows, Git Bash / PowerShell)
-```bash
-python -m venv .venv
-.venv/Scripts/pip install -r requirements.txt
-cp .env.example .env
-.venv/Scripts/python -m uvicorn backend.app.main:app --port 8000 --reload
-```
-- **http://127.0.0.1:8000/wall** — видеостена (общий экран, только просмотр)
-- **http://127.0.0.1:8000/** — АРМ координатора: представиться → «Начать смену»; «Принял», «Взять в работу»,
-  «Передать в команду», статусы, эскалация, комментарии, импорт/экспорт файла
-- **http://127.0.0.1:8000/itsm/&lt;id&gt;** — мини-ITSM: назначение группы, статус, приоритет, срок, журнал работ
+The MVP gives a shift one shared incident list, individual coordinator workstations, and a read-only wall. Everything in the MVP works with `LLM_PROVIDER=off`.
 
-Правки `data/incidents.json` руками и действия из АРМ/ITSM видны на всех экранах за ~1 с.
-Чтобы открыть АРМ с других компьютеров, запускайте сервер с `--host 0.0.0.0` и заходите по IP ноутбука.
-Node/npm не нужны: фронт без сборки.
+## Run the MVP on Windows
 
-Демо-сценарий (запасной вариант ручной правки):
-```bash
-.venv/Scripts/python scripts/demo.py list     # шаги
-.venv/Scripts/python scripts/demo.py step 1   # высокий → критический
-.venv/Scripts/python scripts/demo.py reset    # вернуть оригинал
-.venv/Scripts/python scripts/demo.py reset demo   # свой демо-файл со свежими датами
-```
-
-### Сквозной сценарий «Сбой в нескольких продуктах»
-
-Для отдельного прогона сгенерируйте временный файл и запустите сервер на другом порту. В PowerShell из корня репозитория:
+From the repository root in a VS Code PowerShell terminal, install dependencies once:
 
 ```powershell
-$demoOutageFile = Join-Path $env:TEMP "mts-outages-$PID.json"
-.venv/Scripts/python scripts/make_demo.py --out $demoOutageFile
-$env:INCIDENTS_FILE = $demoOutageFile
-$env:TIME_MODE = 'real'
-$env:LLM_PROVIDER = 'rules'
-.venv/Scripts/python -m uvicorn backend.app.main:app --port 8010
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-В АРМ на `http://127.0.0.1:8010/` откройте вкладку «Сбои». У предложения должны быть три заявки из разных
-продуктов на общем компоненте. Одновременная заявка с другим кодом остаётся отдельно. Подтвердите предложение
-и откройте состав. На `http://127.0.0.1:8010/wall` должна появиться одна карточка сбоя, а четыре группы и их
-счётчики продолжат учитывать отдельные инциденты. После перезапуска с тем же файлом подтверждение сохраняется.
-Режим `rules` позволяет повторить сценарий без вызовов GigaChat. Для прогона с моделью используйте `gigachat`.
+Generate a fresh synthetic demo file when needed. Reuse the same file between runs to keep demo actions.
 
-На том же демо-файле найдите в поиске АРМ `INC000030000031` («Повторный сбой общего узла»). Откройте карточку,
-чтобы увидеть признак повтора, прошлое решение и команду, которая его применила. Назначение можно сделать вручную.
+```powershell
+.\.venv\Scripts\python.exe scripts/make_demo.py --count 5000 --out cache/mvp-demo/incidents.json
+```
 
-Тесты: `.venv/Scripts/python -m pytest backend/tests -q`
+Select the file and run the server. These shell variables also take precedence over an existing local `.env`.
 
-Документация: [CLAUDE.md](CLAUDE.md) · [docs/contract.md](docs/contract.md) · [docs/data-report.md](docs/data-report.md) · правила групп [config/rules.yaml](config/rules.yaml)
+```powershell
+$env:INCIDENTS_FILE = 'cache/mvp-demo/incidents.json'
+$env:TIME_MODE = 'real'
+$env:LLM_PROVIDER = 'off'
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --port 8000
+```
+
+- [Coordinator workstation](http://127.0.0.1:8000/)
+- [Read-only wall](http://127.0.0.1:8000/wall)
+- Local mini-ITSM opens from the incident panel.
+
+For two workstations, use separate browser profiles or two computers connected to the same server. To admit another computer on a trusted demo network, start with `--host 0.0.0.0` and use the server computer's local address.
+
+## Workflow and data ownership
+
+| Step | Behavior |
+|---|---|
+| Ingest | The server reads one JSON export, normalizes statuses and priorities, and refreshes a shared snapshot after changes. A partially written or invalid file leaves the last valid snapshot available. |
+| Find work | Groups use configured priority, team, and status rules. Search covers the full export. The personal queue shows unclaimed tasks and tasks owned by the selected coordinator. Critical claims, handoffs, and outage reviews appear first. Deadline reminders and past cases can be expanded from the queue. |
+| Coordinate | Taking a task records a coordinator on the incident. A colleague sees the owner and can explicitly take over. Releasing an active incident makes it available again. The coordinator owns the handoff; the assigned team owns technical work. |
+| Transfer and update | Assignment to another team records the team and optional engineer, clears coordinator ownership, and writes the journal. The panel can change status via the allowed transitions, with a reason for terminal and investigation states. The mini-ITSM also edits priority and deadline. Escalation is recorded locally in the journal. |
+| Review outages | An explicit cause link or at least three active incidents from at least two products sharing a code within six hours can produce a proposal with AI off. The coordinator can remove unrelated members before confirmation and correct a confirmed group later. |
+| Keep screens in sync | The workstation, wall, and mini-ITSM read the same server state. Successful writes update the file, journal, and snapshot. The wall stays read-only. Completed incidents remain visible for 30 minutes; closed incidents for 5 minutes. Search still finds them. |
+
+The included mini-ITSM and workstation share a local JSON file and API. An external `ITSM_URL_TEMPLATE` can link to records in another ITSM using `{id}` or `{sysId}`. SimpleOne import, authentication, and write-back are separate integrations. The demo uses self-entered coordinator names, a single server process, and a trusted network.
+
+## Presentation check
+
+1. Open the wall and two coordinator profiles. Enter different coordinator names.
+2. Find a critical or coordinator-queue incident, take it in one profile, and show the owner in the other. The other profile's personal queue no longer offers the task.
+3. Transfer it to a team. Open the journal and verify the team, action, and author in the local mini-ITSM.
+4. Change its status from the workstation. Show the history and the update on the shared wall if the incident belongs to a wall group.
+5. Review a proposed outage, remove a member, and confirm the remaining eligible set. Open its composition on the workstation.
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest backend/tests -q
+```
+
+See [API contract](docs/contract.md) and [project decisions](docs/decisions.md).

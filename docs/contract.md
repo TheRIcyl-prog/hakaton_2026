@@ -195,7 +195,7 @@
 
 `ai_status` в снимке (и в `/api/health` → `ai`):
 ```jsonc
-{"provider": "gigachat",            // rules — GigaChat выключен (LLM_PROVIDER=rules)
+{"provider": "gigachat",            // off = MVP without AI, rules = local AI hints, gigachat = remote AI
  "state": "ok",                     // ok | starting | limited (429: ответы задерживаются, повтор через 5–60 с)
                                     // | offline (нет связи — работают правила, повтор раз в минуту) | off
  "label": "ИИ: нет связи с GigaChat, работают правила",   // готовая подпись для шапки/плашки
@@ -303,8 +303,8 @@ comment, escalated,` ⚑ `taken, released`. При старте сервера �
 
 | Метод | Тело | Что делает |
 |---|---|---|
-| ⚑ `POST /api/incidents/{id}/claim` | `{by, expected_hash?, force?}` | «Взять в работу»: `coordinator` в файл + журнал; тревога снята у всех. Уже у другого → `409 {"detail", "coordinator"}`; `force: true` — забрать себе. Решённый → 400 |
-| ⚑ `DELETE /api/incidents/{id}/claim?by=Имя&expected_hash=…` | — | «Отпустить»: снять `coordinator` + журнал |
+| ⚑ `POST /api/incidents/{id}/claim` | `{by, expected_hash?, force?}` | Claims the incident and updates the shared alert and journal. If already owned by a colleague: `409` with `coordinator` and `hash`. Takeover requires `force: true` and a current `expected_hash`. |
+| ⚑ `DELETE /api/incidents/{id}/claim?by=Имя&expected_hash=…` | — | The current owner releases the incident. `by` is required. |
 | `POST /api/itsm/{id}/assign` | `{team, assignee?, comment?, by, expected_hash?}` | передать в команду (Выполняется → Назначен); ⚑ снимает `coordinator` |
 | `POST /api/itsm/{id}/state` | `{state_id, reason?, comment?, by, expected_hash?}` | смена статуса по `transitions` из АРМ или мини-ITSM, АРМ передаёт `expected_hash` |
 | `POST /api/itsm/{id}/priority` | `{priority_id, recalc_deadline?, comment?, by, expected_hash?}` | приоритет (+ срок по SLA) |
@@ -331,7 +331,7 @@ Store на каждую правку строит `backend/app/refs.Refs` одн
 
 ИИ предоставляет `ai.outage_candidates()` после `ai.enrich()`. Элемент списка: `{master_id, ids, name, reason, source}`.
 `ids` включает `master_id`. Правила ищут всплеск по общему `productMasterId`: минимум три активных инцидента,
-минимум два продукта, не более 15 минут от первого до последнего. GigaChat в фоне может уточнить состав,
+минимум два продукта, не более шести часов от первого до последнего. GigaChat в фоне может уточнить состав,
 название и объяснение. `source` принимает `rules`, `gigachat` или `cache`. Пока модели нет, объяснение показывает
 наблюдаемые совпадения. Общий код и время позволяют предложить связь для проверки координатором.
 

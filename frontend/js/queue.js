@@ -1,6 +1,7 @@
 import { api, getMe } from "./api.js";
 import { closeModal } from "./desk.js";
 import { esc } from "./format.js";
+import { aiEnabled, modelOutage, outageTitle } from "./ai-mode.js";
 
 const REFRESH_MS = 5000; // Отсрочка может истечь без новой версии снимка.
 const KINDS = {
@@ -14,6 +15,7 @@ const KINDS = {
   recurrence: ["Повтор", "Прошлые случаи"],
 };
 const REVIEW_KINDS = new Set(["dynamics", "aftermath", "deadline", "recurrence"]);
+const REMINDER_KINDS = new Set(["deadline", "recurrence"]);
 
 function button(action, title, primary = false) {
   return `<button type="button" class="btn small${primary ? " btn-primary" : ""}" data-queue-act="${action}">${title}</button>`;
@@ -25,28 +27,31 @@ function itsmLink(value) {
     ? `<a class="btn small" href="${esc(url.href)}" target="_blank" rel="noopener">ITSM</a>` : "";
 }
 
-function renderItem(item, scope, candidate) {
+function renderItem(item, scope, candidate, useAI) {
   const [kind, title] = KINDS[item.kind] || ["Задача", "Открыть"];
   const inc = item.incident;
   const review = REVIEW_KINDS.has(item.kind);
   const outage = item.kind === "outage";
-  const confidence = item.kind === "route" && Number.isFinite(item.confidence) ? `Уверенность ${Math.round(item.confidence * 100)}%` : "";
+  const manual = item.kind === "route" && !useAI;
+  const confidence = useAI && item.kind === "route" && Number.isFinite(item.confidence) ? `Уверенность ${Math.round(item.confidence * 100)}%` : "";
+  const taskTitle = manual ? "Выбрать команду и передать" : outage && !useAI ? (candidate ? outageTitle(candidate, useAI) : kind) : item.title;
+  const reason = manual || (outage && !useAI && (!candidate || modelOutage(candidate, useAI))) ? "" : item.reason;
   const primary = outage
     ? item.outage_id && button("review-outage", title, true)
     : item.incident_id && button(review || !KINDS[item.kind] ? "open" : item.kind, title, true);
   return `<article class="action${inc?.priority_level === "critical" ? " crit" : item.kind === "escalate" ? " escalate" : ""}" data-queue-id="${esc(item.id)}">
     <div class="action-head"><span>${kind}${inc?.product ? ` · ${esc(inc.product)}` : ""}</span>
       ${inc?.deadline ? `<span class="countdown-mini" data-deadline="${esc(inc.deadline)}"></span>` : ""}</div>
-    <div class="action-title">${esc(item.title || inc?.title || kind)}</div>
-    ${inc ? `<div class="queue-incident">${esc(inc.id)}${inc.title && inc.title !== item.title ? ` · ${esc(inc.title)}` : ""}</div>` : ""}
-    ${item.reason || confidence ? `<div class="action-reason">${[item.reason, confidence].filter(Boolean).map(esc).join(" · ")}</div>` : ""}
+    <div class="action-title">${esc(taskTitle || inc?.title || kind)}</div>
+    ${inc ? `<div class="queue-incident">${esc(inc.id)}${inc.title && inc.title !== taskTitle ? ` · ${esc(inc.title)}` : ""}</div>` : ""}
+    ${reason || confidence ? `<div class="action-reason">${[reason, confidence].filter(Boolean).map(esc).join(" · ")}</div>` : ""}
     ${candidate ? `<details class="queue-composition"><summary>Состав · ${esc(candidate.incident_ids.length)}</summary>
       <div>${esc(candidate.incident_ids.join(", "))}</div></details>` : ""}
     <fieldset class="action-btns"${scope.busy.has(item.id) ? " disabled" : ""}>
       ${primary || ""}
       ${outage ? button("dismiss", "Нет") : item.incident_id && !review && KINDS[item.kind] ? button("open", "Подробнее") : ""}
       ${review && scope.reviewed.has(item.id) ? button("reviewed", "Просмотрено") : ""}
-      ${item.draft ? button("copy", "Текст") : ""}
+      ${useAI && item.draft ? button("copy", "Текст") : ""}
       ${itsmLink(inc?.itsm_url)}
       ${button("snooze", "Отложить на 15 мин")}
       ${outage ? "" : button("dismiss", "Не моё")}
@@ -59,6 +64,7 @@ export function mountQueue(el, { getSnapshot, open, copy, needName, toast, revie
   const list = el.querySelector("#queue-items");
   const status = el.querySelector("#queue-status");
   const retry = el.querySelector("#queue-retry");
+  const reminders = el.querySelector("#queue-reminders");
   const modal = document.getElementById("modal");
   let scope;
   let read;
@@ -71,10 +77,17 @@ export function mountQueue(el, { getSnapshot, open, copy, needName, toast, revie
     if (status.textContent !== message) status.textContent = message;
     status.parentElement.hidden = !message;
     retry.hidden = !scope.error;
-    counter.textContent = scope.items.length || "";
-    const candidates = new Map((getSnapshot()?.outage_candidates || []).map((candidate) => [candidate.id, candidate]));
-    const next = scope.items.map((item) => renderItem(item, scope, candidates.get(item.outage_id))).join("")
-      || (scope.loaded && !scope.error ? `<p class="actions-empty">В очереди пока нет задач</p>` : "");
+    const reminderCount = scope.items.filter((item) => REMINDER_KINDS.has(item.kind)).length;
+    const primaryCount = scope.items.length - reminderCount;
+    reminders.hidden = !reminderCount;
+    reminders.setAttribute("aria-expanded", String(scope.showReminders));
+    reminders.textContent = scope.showReminders ? "Скрыть сроки и повторы" : `Показать сроки и повторы (${reminderCount})`;
+    counter.textContent = (scope.showReminders ? scope.items.length : primaryCount) || "";
+    const snap = getSnapshot();
+    const candidates = new Map((snap?.outage_candidates || []).map((candidate) => [candidate.id, candidate]));
+    const visible = scope.showReminders ? scope.items : scope.items.filter((item) => !REMINDER_KINDS.has(item.kind));
+    const next = visible.map((item) => renderItem(item, scope, candidates.get(item.outage_id), aiEnabled(snap))).join("")
+      || (scope.loaded && !scope.error ? `<p class="actions-empty">${reminderCount ? "Остались проверки сроков и прошлых случаев" : "В очереди пока нет задач"}</p>` : "");
     if (next === markup) return;
     const expanded = new Set([...list.querySelectorAll("details[open]")].map((d) => d.closest("[data-queue-id]").dataset.queueId));
     markup = next;
@@ -95,11 +108,11 @@ export function mountQueue(el, { getSnapshot, open, copy, needName, toast, revie
     if (scope?.by !== by) {
       cancelRead();
       if (modal.querySelector("#queue-action-form")) closeModal();
-      scope = { by, items: [], busy: new Set(), reviewed: new Set(), loaded: false, error: "" };
-      paint();
+      scope = { by, items: [], busy: new Set(), reviewed: new Set(), loaded: false, error: "", showReminders: false };
     } else if (urgent) {
       cancelRead();
     }
+    paint();
     if (read) { readAgain = true; return; }
     const request = new AbortController();
     read = request;
@@ -178,12 +191,14 @@ export function mountQueue(el, { getSnapshot, open, copy, needName, toast, revie
       if (!available(owner, item.id) || el.classList.contains("hidden") || !modal.classList.contains("hidden")) return;
       const route = item.kind === "route";
       const title = route ? "Передать в команду" : "Эскалировать";
-      const teams = [...new Set([item.target_team, ...(getSnapshot()?.teams || [])])].filter((team) => team && team !== inc.team);
+      const snap = getSnapshot();
+      const suggestion = aiEnabled(snap) ? item.target_team : null;
+      const teams = [...new Set([suggestion, ...(snap?.teams || [])])].filter((team) => team && team !== inc.team);
       modal.innerHTML = `<form class="modal-card queue-action-form" id="queue-action-form">
         <h2>${title}</h2>
         <div class="modal-sub">${esc(inc.id)} · ${esc(inc.title)} · ${esc(inc.team || "Команда не указана")}</div>
         ${route ? `<label class="modal-label" for="queue-team">Команда</label>
-          <select name="team" id="queue-team" required><option value="">Выберите команду</option>${teams.map((team) => `<option${team === item.target_team ? " selected" : ""}>${esc(team)}</option>`).join("")}</select>
+          <select name="team" id="queue-team" required><option value="">Выберите команду</option>${teams.map((team) => `<option${team === suggestion ? " selected" : ""}>${esc(team)}</option>`).join("")}</select>
           <label class="modal-label" for="queue-assignee">Исполнитель (необязательно)</label><input id="queue-assignee" name="assignee" autocomplete="off">` : ""}
         <label class="modal-label" for="queue-comment">Комментарий в журнал</label>
         <textarea name="comment" rows="3" id="queue-comment">${route ? "" : esc(item.reason || "")}</textarea>
@@ -207,7 +222,7 @@ export function mountQueue(el, { getSnapshot, open, copy, needName, toast, revie
         const comment = data.get("comment").trim() || null;
         const write = route
           ? () => api.assign(inc.id, team, comment, data.get("assignee").trim() || null, inc.hash)
-          : () => api.escalate(inc.id, comment);
+          : () => api.escalate(inc.id, comment, inc.hash);
         apply(item, write, route ? `Передан в «${team}»` : "Эскалация записана в журнал", { domain: true, form });
       };
       form.querySelector(route ? "select" : "textarea").focus();
@@ -247,6 +262,7 @@ export function mountQueue(el, { getSnapshot, open, copy, needName, toast, revie
       apply(item, (by) => api.queuePreference(by, id, operation), operation === "snooze" ? "Отложено на 15 минут" : "Убрано из вашей очереди");
     }
   });
+  reminders.onclick = () => { scope.showReminders = !scope.showReminders; paint(); };
   retry.onclick = () => refresh(true);
   return { refresh, syncBy: () => { if (scope?.by !== getMe()) refresh(); } };
 }
