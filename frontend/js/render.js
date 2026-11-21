@@ -166,6 +166,50 @@ function matches(inc, q) {
   return q.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
 }
 
+function wallGroupRows(ids, incidents, group, alarmIds, outages, overlappingDuplicates) {
+  const rows = [];
+  const collapsed = new Map();
+  const dupSeen = new Set();
+  for (const id of ids) {
+    const inc = incidents[id];
+    const outage = outages.get(id);
+    if (outage) {
+      let row = collapsed.get(outage.id);
+      if (!row) {
+        row = { outage, count: 0, alarmCount: 0, resolved: true, critical: false };
+        collapsed.set(outage.id, row);
+        rows.push(row);
+      }
+      row.count++;
+      if (!inc.resolved_in.includes(group)) {
+        row.resolved = false;
+        row.critical ||= inc.priority_level === "critical";
+        if (alarmIds.has(id)) row.alarmCount++;
+      }
+      continue;
+    }
+    const dupId = inc.ai?.duplicates?.group_id;
+    const hideDuplicate = overlappingDuplicates.has(dupId);
+    if (dupId && !hideDuplicate) {
+      if (dupSeen.has(dupId)) continue;
+      dupSeen.add(dupId);
+    }
+    rows.push({ id, hideDuplicate });
+  }
+  return rows;
+}
+
+function fillOutageRow(el, row) {
+  const { outage, count, alarmCount, resolved, critical } = row;
+  el.dataset.outage = outage.id;
+  el.className = "card one-line outage-group-row";
+  el.classList.toggle("outage-row-resolved", resolved);
+  el.classList.toggle("is-critical", critical || alarmCount > 0);
+  el.classList.toggle("alarm", alarmCount > 0);
+  el.innerHTML = `<b>+${count} из сбоя</b><span class="outage-group-name" title="${esc(outage.name)}">${esc(outage.name)}</span>
+    ${alarmCount ? `<strong class="outage-alarm-label">! ${alarmCount} не взято</strong>` : ""}`;
+}
+
 // ui: {query, changed, wall, open, predicate, limits, more, selected, alarmIds, actions, act}
 export function renderBoard(snap, nowMs, ui) {
   const board = $("#board");
@@ -181,8 +225,21 @@ export function renderBoard(snap, nowMs, ui) {
   const alive = new Set();
   const filtering = !!(ui.query || ui.predicate);
   const seenWall = new Set(); // стена: инцидент уже показан полной карточкой в левой колонке → здесь компактная строка
+  const outages = new Map();
+  const overlappingDuplicates = new Set();
   let shown = 0;
   if (ui.wall) {
+    for (const outage of snap.outages || []) {
+      for (const id of outage.incident_ids) outages.set(id, outage);
+    }
+    if (outages.size) {
+      for (const inc of Object.values(snap.incidents)) {
+        const dup = inc.ai?.duplicates;
+        if (dup?.group_id && (outages.has(inc.id) || dup.ids?.some((id) => outages.has(id)))) {
+          overlappingDuplicates.add(dup.group_id);
+        }
+      }
+    }
     // «Критические» вдвое шире; нет критических — колонка сужается и крупно «Критических нет»
     const crit = snap.groups.find((g) => g.key === "critical");
     const hasCrit = !!(crit && crit.ids.length);
@@ -193,28 +250,33 @@ export function renderBoard(snap, nowMs, ui) {
     const col = board.querySelector(`.column[data-key="${g.key}"]`);
     const body = col.querySelector(".column-body");
     const more = col.querySelector(".column-more");
-    let ids = g.ids.filter((id) => matches(snap.incidents[id], ui.query) && (!ui.predicate || ui.predicate(snap.incidents[id])));
+    const ids = g.ids.filter((id) => matches(snap.incidents[id], ui.query) && (!ui.predicate || ui.predicate(snap.incidents[id])));
     shown += ids.length;
     const cnt = col.querySelector(".count");
     const n = snap.counts[g.key] ?? g.count;
     const f = failures(snap, g);
     cnt.innerHTML = filtering ? `${ids.length}<small> из ${g.ids.length}</small>`
       : `${n}${f < n ? `<small> (${f} ${plural(f, "сбой", "сбоя", "сбоев")})</small>` : ""}`;
-    // стена: дубли одного сбоя — одной карточкой (первая — самая горящая, порядок колонки от сервера)
-    const dupSeen = new Set();
-    if (ui.wall) {
-      ids = ids.filter((id) => {
-        const d = snap.incidents[id].ai && snap.incidents[id].ai.duplicates;
-        if (!d || !d.group_id) return true;
-        if (dupSeen.has(d.group_id)) return false;
-        dupSeen.add(d.group_id);
-        return true;
-      });
-    }
+    const rows = ui.wall ? wallGroupRows(ids, snap.incidents, g.key, ui.alarmIds, outages, overlappingDuplicates) : ids.map((id) => ({ id }));
     const limit = ui.wall ? WALL_MAX : (ui.limits && ui.limits[g.key]) || ARM_PAGE;
-    const page = ids.slice(0, limit);
+    const page = rows.slice(0, limit);
     const els = [];
-    for (const id of page) {
+    for (const row of page) {
+      if (row.outage) {
+        const key = JSON.stringify([g.key, row.outage.id]);
+        const sig = JSON.stringify([row.outage.name, row.count, row.alarmCount, row.resolved, row.critical]);
+        let entry = cardCache.get(key);
+        if (!entry || entry.sig !== sig) {
+          const el = entry ? entry.el : document.createElement("article");
+          fillOutageRow(el, row);
+          entry = { sig, el };
+          cardCache.set(key, entry);
+        }
+        alive.add(key);
+        els.push(entry.el);
+        continue;
+      }
+      const { id, hideDuplicate } = row;
       const inc = snap.incidents[id];
       const key = `${g.key}:${id}`;
       alive.add(key);
@@ -224,13 +286,13 @@ export function renderBoard(snap, nowMs, ui) {
       const compact = ui.wall && seenWall.has(id);
       if (ui.wall) seenWall.add(id);
       const sig = [inc.hash, inc.groups.join(), inc.resolved_in.join(), JSON.stringify(inc.ai), inc.forecast && inc.forecast.level,
-        claim ? claim.by : "", inc.work_log.length, changed ? changed.until : 0, action ? action.id : "", compact].join("|");
+        claim ? claim.by : "", inc.work_log.length, changed ? changed.until : 0, action ? action.id : "", compact, hideDuplicate].join("|");
       let entry = cardCache.get(key);
       if (!entry || entry.sig !== sig) {
         const el = entry ? entry.el : document.createElement("article");
         el.dataset.id = id;
         if (compact) fillCompactWall(el, inc, g.key, nowMs, claim);
-        else if (ui.wall) fillCardWall(el, inc, g.key, nowMs, changed, claim);
+        else if (ui.wall) fillCardWall(el, inc, g.key, nowMs, changed, claim, hideDuplicate);
         else fillCardArm(el, inc, g.key, nowMs, changed, claim, action, ui.act);
         if (ui.open) el.onclick = () => ui.open(id);
         entry = { sig, el };
@@ -248,7 +310,7 @@ export function renderBoard(snap, nowMs, ui) {
         : `<div class="column-empty">${filtering ? "нет по фильтру" : "пусто"}</div>`;
     }
 
-    const rest = ids.length - page.length;
+    const rest = rows.length - page.length;
     col.dataset.rest = String(rest);
     if (!ui.wall) {
       more.classList.toggle("hidden", rest <= 0);
@@ -417,7 +479,7 @@ function fillCardArm(el, inc, group, nowMs, changed, claim, action, act) {
 }
 
 // Карточка стены: крупно, без кнопок, ИИ и номера; исполнитель — только команда; «в работе у Ольги»
-function fillCardWall(el, inc, group, nowMs, changed, claim) {
+function fillCardWall(el, inc, group, nowMs, changed, claim, hideDuplicate) {
   if (inc.resolved_in.includes(group)) { fillResolvedLine(el, inc, nowMs, true); return; }
   el.className = "card";
   el.classList.toggle("is-critical", inc.priority_level === "critical");
@@ -428,7 +490,7 @@ function fillCardWall(el, inc, group, nowMs, changed, claim) {
     claim ? `<span class="owner">в работе: ${esc(firstName(claim.by))}</span>` : "",
     esc_ ? `<span class="escalated">⇪ эскалирован ${esc(fmtTime(esc_.at))}</span>` : "",
   ].filter(Boolean).join("");
-  const d = inc.ai && inc.ai.duplicates;
+  const d = !hideDuplicate && inc.ai?.duplicates;
   const size = d ? d.size || (d.ids || []).length : 0;
   el.innerHTML = `
     <div class="card-top">

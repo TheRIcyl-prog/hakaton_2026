@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .adapter import adapt_all, content_hash, iso, parse_dt, unwrap
+from .adapter import adapt_all, content_hash, iso, outage_link, parse_dt, to_str, unwrap
 from .config import Rules
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -101,6 +101,14 @@ class Itsm:
             raise ItsmError(f"файл инцидентов сейчас не читается (его редактируют?) — правка не сохранена: {e}", 409)
         return data
 
+    def _commit(self, data: list, by: str) -> None:
+        text = dumps(data)
+        backup(self.path, self.backup_dir, self.backups_keep)
+        _atomic_write(self.path, text)
+        if self.store:
+            self.store.ingest_own(data, text)
+            self.store.desk.remember(by)
+
     def _update(self, inc_id: str, by: str, mutate, expected_hash: str | None = None) -> dict:
         if not by or not by.strip():
             raise ItsmError("укажите имя координатора")
@@ -123,12 +131,7 @@ class Itsm:
             rec["workLog"] = log
             new_data = list(data)
             new_data[idx] = rec
-            text_out = dumps(new_data)
-            backup(self.path, self.backup_dir, self.backups_keep)
-            _atomic_write(self.path, text_out)
-            if self.store:
-                self.store.ingest_own(new_data, text_out)
-                self.store.desk.remember(by)
+            self._commit(new_data, by)
             return rec
 
     # ---------- «Да, это один сбой»: подтверждение группы дублей от ИИ (п. 8.4) ----------
@@ -162,13 +165,45 @@ class Itsm:
                 rec["workLog"] = log
                 new_data[pos[inc_id]] = rec
                 changed.append(rec)
-            text_out = dumps(new_data)
-            backup(self.path, self.backup_dir, self.backups_keep)
-            _atomic_write(self.path, text_out)
-            if self.store:
-                self.store.ingest_own(new_data, text_out)
-                self.store.desk.remember(by)
+            self._commit(new_data, by)
             return changed
+
+    def confirm_outage(self, candidate_id: str, by: str) -> dict:
+        by = by.strip()
+        if not by:
+            raise ItsmError("укажите имя координатора")
+        conflict = "предложение о сбое изменилось — обновите снимок"
+        if self.store is None:
+            raise ItsmError(conflict, 409)
+        with self.store.write_lock:
+            candidate = self.store.outage_candidate(candidate_id)
+            if candidate is None:
+                raise ItsmError(conflict, 409)
+            data = self._load()
+            # Как в adapt_all: при повторе id используется последняя запись из файла.
+            positions = {to_str(rec.get("id")): i for i, rec in enumerate(data) if isinstance(rec, dict)}
+            for inc_id, expected_hash in candidate.hashes.items():
+                idx = positions.get(inc_id)
+                if idx is None:
+                    raise ItsmError(conflict, 409)
+                rec = data[idx]
+                if outage_link(rec.get("outage")) is not None:
+                    raise ItsmError("инцидент уже привязан к сбою — обновите снимок", 409)
+                if content_hash(rec) != expected_hash:
+                    raise ItsmError(conflict, 409)
+
+            new_data = list(data)
+            entry = {"at": _fmt(self.now_fn()), "author": by, "action": "outage_confirm",
+                     "text": f"Подтверждён сбой «{candidate.link['name']}» ({candidate_id})"}
+            for inc_id in candidate.hashes:
+                idx = positions[inc_id]
+                rec = data[idx]
+                log = rec["workLog"] if isinstance(rec.get("workLog"), list) else []
+                new_data[idx] = {**rec, "outage": candidate.link, "workLog": [*log, entry]}
+            self._commit(new_data, by)
+            outage = self.store.outage(candidate_id)
+            assert outage is not None
+            return outage
 
     # ---------- «Взять в работу» / «Отпустить» (наше поле coordinator) ----------
     def take(self, inc_id: str, by: str, expected_hash: str | None = None, force: bool = False) -> dict:

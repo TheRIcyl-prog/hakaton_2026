@@ -40,6 +40,7 @@
     <div class="tabs">
       <button class="tab active" data-view="board">Группы</button>
       <button class="tab" data-view="queue">Что делать сейчас <b id="queue-count"></b></button>
+      <button class="tab" data-view="outages">Сбои</button>
       <button class="tab" data-view="mine">Мои <b id="mine-count" class="soft"></b></button>
       <button class="tab" data-view="feed">Лента <b id="feed-count"></b></button>
     </div>
@@ -49,6 +50,13 @@
   <div class="workspace" id="workspace">
     <main class="board" id="board"></main>
     <section class="queue hidden" id="queue"></section>
+    <section class="outages-view hidden" id="outages" aria-label="Сбои">
+      <div class="outage-feedback">
+        <span id="outage-status" role="status"></span>
+        <button class="btn small hidden" id="outage-refresh">Обновить снимок</button>
+      </div>
+      <div id="outage-list"></div>
+    </section>
     <section class="queue hidden" id="mine"></section>
     <section class="feedview hidden" id="feedview"></section>
     <section class="results hidden" id="results"></section>

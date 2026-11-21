@@ -88,6 +88,23 @@ def dup_key(members: list[dict]) -> str:
     return _h("dup", sorted((m["id"], m["title"]) for m in members))
 
 
+OUTAGE_FIELDS = (
+    ("product", "продукт", 120),
+    ("service", "сервис", 120),
+    ("channel", "канал", 80),
+    ("created_at", "время", 40),
+    ("title", "заголовок", 120),
+    ("short_description", "краткое описание", 240),
+    ("description", "описание", 400),
+)
+PERSON_FIELDS = ("assignee", "initiator", "assignee_login")
+
+
+def outage_key(code: str, members: list[dict]) -> str:
+    fields = ("id", *(field for field, _, _ in OUTAGE_FIELDS), *PERSON_FIELDS)
+    return _h("outage", code, [[inc.get(field) for field in fields] for inc in members])
+
+
 # ---------- промпты ----------
 def build_incident_prompt(fields: dict, parts: dict) -> str:
     """parts: {"summary": True, "route": {"cands": [...], "total": n}, "risk": {...}, "dynamics": {...}}"""
@@ -126,6 +143,23 @@ def build_dup_prompt(members: list[dict]) -> str:
         "Это один и тот же сбой? Верни JSON: {\"same\": true/false, "
         "\"name\": \"короткое название сбоя до 60 знаков\", \"reason\": \"почему, 1 предложение\", "
         "\"exclude\": [\"номера, которые НЕ относятся к сбою\"]}"
+    )
+    return "\n".join(lines)
+
+
+def build_outage_prompt(code: str, members: list[dict]) -> str:
+    lines = [f"Кандидат на сбой между продуктами с общим кодом {clip(code, 80)}."]
+    for inc in members:
+        names = [inc.get(field) for field in PERSON_FIELDS]
+        entry = {label: clip(scrub(inc[field], names), limit)
+                 for field, label, limit in OUTAGE_FIELDS if inc.get(field)}
+        lines.append(json.dumps({"id": inc["id"], **entry}, ensure_ascii=False))
+    lines.append(
+        "Общий код и близкое время — повод проверить связь. Оцени, есть ли общие технические признаки "
+        "в симптомах и сервисах. Если признаков недостаточно, верни same=false. "
+        "При частичном совпадении перечисли посторонние заявки в exclude. Причину формулируй как гипотезу. "
+        'Верни JSON: {"same": true/false, "name": "название до 60 знаков", '
+        '"reason": "краткое объяснение по наблюдаемым признакам", "exclude": ["id из списка"]}'
     )
     return "\n".join(lines)
 
@@ -184,6 +218,16 @@ def parse_dup_answer(text: str, ids: list[str]) -> dict:
             "exclude": exclude}
 
 
+def parse_outage_answer(text: str, ids: list[str]) -> dict:
+    data = _json(text)
+    same, exclude = data.get("same"), data.get("exclude", [])
+    if not isinstance(same, bool) or not isinstance(exclude, list) or any(inc_id not in ids for inc_id in exclude):
+        raise ValueError("ожидались same и список id участников в exclude")
+    name, reason = data.get("name"), data.get("reason")
+    return {"same": same, "exclude": exclude, "name": _s(name, 60) if isinstance(name, str) else None,
+            "reason": _s(reason, 240) if isinstance(reason, str) else None}
+
+
 # ---------- очередь ----------
 @dataclass
 class Task:
@@ -191,7 +235,7 @@ class Task:
     priority: float
     prompt: str
     parts: dict                 # {имя части: ключ кэша}
-    kind: str = "incident"      # incident | dup
+    kind: str = "incident"      # incident | dup | outage
     meta: dict = field(default_factory=dict)
     seq: int = 0
 
@@ -346,6 +390,8 @@ class LLMWorker:
             try:
                 if t.kind == "dup":
                     results = {"dup": parse_dup_answer(text, t.meta["ids"])}
+                elif t.kind == "outage":
+                    results = {"outage": parse_outage_answer(text, t.meta["ids"])}
                 else:
                     results = parse_incident_answer(text, t.meta["parts"])
                 bad = False

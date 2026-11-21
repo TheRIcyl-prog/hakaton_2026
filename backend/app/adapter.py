@@ -151,6 +151,12 @@ def _coordinator(value: Any) -> dict | None:
     return {"name": name, "at": iso(parse_dt(value.get("at")))}
 
 
+def outage_link(value: Any) -> dict | None:
+    if not isinstance(value, dict) or not isinstance(value.get("id"), str) or not value["id"].strip():
+        return None
+    return {key: to_str(value.get(key)) for key in ("id", "master_id", "name", "reason", "source")}
+
+
 def adapt_one(raw: dict, rules: Rules, itsm_template: str) -> dict | None:
     if not isinstance(raw, dict):
         return None
@@ -167,7 +173,7 @@ def adapt_one(raw: dict, rules: Rules, itsm_template: str) -> dict | None:
     except (KeyError, IndexError, ValueError):
         itsm_url = None
 
-    return {
+    incident = {
         "id": inc_id,
         "sys_id": sys_id or None,
         "title": to_str(raw.get("header")) or inc_id,
@@ -216,6 +222,10 @@ def adapt_one(raw: dict, rules: Rules, itsm_template: str) -> dict | None:
         "coordinator": _coordinator(raw.get("coordinator")),
         "hash": content_hash(raw),
     }
+    link = outage_link(raw.get("outage"))
+    if link is not None:
+        incident["outage"] = link
+    return incident
 
 
 def unwrap(data: Any) -> list:

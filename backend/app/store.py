@@ -34,6 +34,7 @@ from .diff import DONE_KINDS, diff
 from .forecast import forecast_all
 from .groups import assign_groups
 from .history import History
+from .outages import Outage, OutageCandidate, build_candidates, build_outages
 from .refs import Refs
 
 AI_REFRESH_SECONDS = 30   # риск и прогноз зависят от времени — пересчитываем и без правок
@@ -71,6 +72,9 @@ class Store:
         self.seen_resolved: dict[str, datetime] = {}
         self.events: deque[dict] = deque(maxlen=300)
         self.actions: list[dict] = []
+        self._outage_candidates: dict[str, OutageCandidate] = {}
+        self._outages: dict[str, Outage] = {}
+        self._visible_outages: list[dict] = []
         self.refs: Refs | None = None
         self.seq = 0
         self.version = 0
@@ -220,6 +224,8 @@ class Store:
         self.groups = assign_groups(new_incidents, self.rules, now, self.seen_resolved)
         self.refs = Refs(new_incidents, now, changed, removed, self.history)
         self._derive(new_incidents, now)
+        self._outages = build_outages(new_incidents, self.seen_resolved, self.history)
+        self._visible_outages = self._outages_in_snapshot(now)
 
         if self.loaded:
             stamp = adapter.iso(_utcnow())
@@ -250,6 +256,10 @@ class Store:
             enrich(incidents, now, self.rules, refs=refs)
         else:
             enrich(incidents, now, self.rules)
+        self._outage_candidates = build_candidates(ai_layer.outage_candidates(), incidents)
+
+    def _outages_in_snapshot(self, now: datetime) -> list[dict]:
+        return [outage.summary for outage in self._outages.values() if outage.visible(now)]
 
     def _regroup_if_needed(self, force: bool) -> bool:
         """Время идёт: решённые критические уходят из группы, риск растёт. Пересчитываем без перечитывания."""
@@ -273,6 +283,10 @@ class Store:
             elif ai_dirty:
                 self._enrich(self.incidents, now)
                 self.actions = build_actions(self.incidents, now)  # подсказки «кому передать» в очереди
+                changed = True
+            visible_outages = self._outages_in_snapshot(now)
+            if visible_outages != self._visible_outages:
+                self._visible_outages = visible_outages
                 changed = True
             if changed:
                 self.version += 1
@@ -369,6 +383,8 @@ class Store:
             "total_incidents": len(self.incidents),
             "active_total": active_total,
             "outside_active": active_total - active_in_groups,   # «ещё N активных вне групп»
+            "outage_candidates": [candidate.summary for candidate in self._outage_candidates.values()],
+            "outages": self._visible_outages,
             "actions": self.actions,
             "ai_status": ai_layer.status(),
             **self.desk.export(self.incidents),    # alerts, claims, coordinators — общее состояние смены
@@ -493,6 +509,20 @@ class Store:
             if inc is None:
                 return None
             return {**_public(inc), "raw": self.raw_by_id.get(inc_id), "history": self.history.get(inc_id)}
+
+    def outage_candidate(self, candidate_id: str) -> OutageCandidate | None:
+        with self.lock:
+            return self._outage_candidates.get(candidate_id)
+
+    def outage(self, outage_id: str, *, include_incidents: bool = False) -> dict | None:
+        with self.lock:
+            outage = self._outages.get(outage_id)
+            if outage is None:
+                return None
+            summary = outage.summary
+            if include_incidents:
+                return {**summary, "incidents": [_public(self.incidents[i]) for i in summary["incident_ids"]]}
+            return summary
 
 
 def _public(inc: dict) -> dict:

@@ -11,20 +11,40 @@ export function setMe(name) {
 // Цикл опроса: onSnap(snap) при изменениях, onStatus(online) на каждом шаге
 export function startPolling(onSnap, onStatus, intervalMs = 1000) {
   let etag = null;
-  async function tick() {
+  let request = null;
+  let timer;
+  async function fetchSnapshot(force) {
     try {
-      const r = await fetch("/api/snapshot", { headers: etag ? { "If-None-Match": etag } : {}, cache: "no-store" });
+      const headers = !force && etag ? { "If-None-Match": etag } : {};
+      const r = await fetch("/api/snapshot", { headers, cache: "no-store" });
       if (r.status === 200) {
+        const snap = await r.json();
+        onSnap(snap);
         etag = r.headers.get("ETag");
-        onSnap(await r.json());
+      } else if (r.status !== 304 || force) {
+        throw new Error(`ошибка ${r.status}`);
       }
       onStatus(true);
+      return true;
     } catch {
       onStatus(false);
+      return false;
     }
-    setTimeout(tick, intervalMs);
+  }
+  // Принудительное обновление идёт после уже начатого опроса, чтобы старый ответ не перезаписал новый снимок.
+  function tick(force = false) {
+    clearTimeout(timer);
+    const pending = request ? request.then(() => fetchSnapshot(force)) : fetchSnapshot(force);
+    request = pending;
+    pending.then(() => {
+      if (request !== pending) return;
+      request = null;
+      timer = setTimeout(tick, intervalMs);
+    });
+    return pending;
   }
   tick();
+  return () => tick(true);
 }
 
 async function send(method, url, body) {
@@ -57,6 +77,8 @@ export const api = {
   comment: (id, text) => send("POST", `/api/itsm/${encodeURIComponent(id)}/comment`, { text, by: getMe() }),
   escalate: (id, comment) => send("POST", `/api/itsm/${encodeURIComponent(id)}/escalate`, { comment, by: getMe() }),
   confirmDups: (master_id, ids) => send("POST", "/api/duplicates/confirm", { master_id, ids, by: getMe() }),
+  confirmOutage: (candidate_id) => send("POST", "/api/outages/confirm", { candidate_id, by: getMe() }),
+  outage: (id) => send("GET", `/api/outages/${encodeURIComponent(id)}`),
   meta: () => send("GET", "/api/meta"),
   incident: (id) => send("GET", `/api/incidents/${encodeURIComponent(id)}`),
 };

@@ -4,10 +4,12 @@ import * as R from "./render.js";
 import * as Sound from "./sound.js";
 import { computeAlerts, processEvents, ring } from "./alerts.js";
 import { startPolling } from "./api.js";
+import { renderWallOutages } from "./outages.js";
 
 const HIGHLIGHT_MS = 20000;
 const BANNER_MS = 5000; // красная полоса на новый критический — 5 секунд, дальше мигает карточка
 const DESIGN_WIDTH = 1600;
+const outagesEl = document.getElementById("wall-outages");
 const state = { snap: null, online: true, lastOkMs: 0, offsetMs: 0, alerts: [], bannerReady: false };
 const ui = { query: "", changed: new Map(), wall: true, alarmIds: new Set() };
 const bannerSeen = new Map(); // key тревоги -> когда впервые увидели (0 — уже висела при открытии стены)
@@ -60,6 +62,7 @@ function render() {
   R.renderCounters(snap, null, { wall: true });
   R.renderClock(snap, now);
   renderBanner(now);
+  renderWallOutages(outagesEl, snap, ui.alarmIds);
   R.renderBoard(snap, now, ui);
   R.renderFeed(snap, null);
   R.tickCountdowns(now);

@@ -7,10 +7,11 @@ import { api, getMe, setMe, startPolling } from "./api.js";
 import { openTransfer, openEscalate, closeModal } from "./desk.js";
 import * as S from "./search.js";
 import { renderPanel } from "./panel.js";
+import { mountOutages } from "./outages.js";
 
 const HIGHLIGHT_MS = 15000;
 const VIEW_KEY = "mi-dashboard:view";
-const VIEWS = ["board", "queue", "mine", "feed"]; // вкладки: Группы, Что делать сейчас, Мои, Лента
+const VIEWS = ["board", "queue", "outages", "mine", "feed"];
 const CHANGE_TYPES = new Set(["priority_changed", "deadline_changed", "team_changed", "assignee_changed", "status_changed",
   "became_critical", "to_coordinators", "from_coordinators", "resolved", "reopened", "critical_resolved", "new", "comment", "escalated"]);
 
@@ -36,13 +37,15 @@ const ui = {
 };
 const nowMs = () => Date.now() + state.offsetMs;
 const filtersEl = document.getElementById("filters");
+const outagesEl = document.getElementById("outages");
+const renderOutages = mountOutages(outagesEl, { open: openDrawer, refresh: () => refreshSnapshot(), needName, toast: R.toast });
 
 function loadView() {
   try { const v = localStorage.getItem(VIEW_KEY); return VIEWS.includes(v) ? v : "board"; } catch { return "board"; }
 }
 
 // ---------- данные ----------
-startPolling(
+const refreshSnapshot = startPolling(
   (snap) => {
     state.snap = snap;
     state.offsetMs = Date.parse(snap.now) - Date.now();
@@ -172,6 +175,7 @@ function renderMain() {
   const queueEl = document.getElementById("queue");
   const mineEl = document.getElementById("mine");
   const feedEl = document.getElementById("feedview");
+  renderOutages(snap);
   if (state.view === "queue") R.renderQueue(snap, queueEl, { copy, open: openDrawer, transfer: doTransfer, escalate: doEscalate }, ui.predicate);
   if (state.view === "feed") { state.feedSeenSeq = snap.last_event_seq; R.renderFeedList(snap, feedEl, openDrawer); }
   const mineN = state.view === "mine" ? R.renderMine(snap, mineEl, getMe(), now, ui)
@@ -181,9 +185,10 @@ function renderMain() {
   document.getElementById("mine-count").textContent = mineN ? String(mineN) : "";
   document.getElementById("board").classList.toggle("hidden", state.view !== "board");
   queueEl.classList.toggle("hidden", state.view !== "queue");
+  outagesEl.classList.toggle("hidden", state.view !== "outages");
   mineEl.classList.toggle("hidden", state.view !== "mine");
   feedEl.classList.toggle("hidden", state.view !== "feed");
-  filtersEl.classList.toggle("hidden", state.view === "feed" || state.view === "mine");
+  filtersEl.classList.toggle("hidden", state.view !== "board" && state.view !== "queue");
   document.querySelectorAll(".tab[data-view]").forEach((t) => t.classList.toggle("active", t.dataset.view === state.view));
 
   const unseen = Math.max(0, snap.last_event_seq - (state.feedSeenSeq ?? snap.last_event_seq));

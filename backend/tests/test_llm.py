@@ -170,7 +170,7 @@ def test_queue_order_critical_first(tmp_path, rules):
 
     client = Gated()
     w = setup_worker(tmp_path, client, concurrency=1)
-    recs = [make(t, s, p, team, header=h, service=f"[Ковёр] {h}", productName=h)
+    recs = [make(t, s, p, team, header=h, service=f"[Ковёр] {h}", productName=h, productMasterId=f"BI_{t}")
             for t, s, p, team, h in [("HI", 2, 3, "КЦ Ступа", "Высокий"), ("RS", 20, 2, "КЦ Ступа", "Исследование"),
                                      ("CO", 0, 2, COORD, "Координаторы"), ("CR", 2, 4, "КЦ Ступа", "Критический")]]
     run(rules, recs)

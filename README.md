@@ -24,6 +24,25 @@ Node/npm не нужны: фронт без сборки.
 .venv/Scripts/python scripts/demo.py reset demo   # свой демо-файл со свежими датами
 ```
 
+### Сквозной сценарий «Сбой в нескольких продуктах»
+
+Для отдельного прогона сгенерируйте временный файл и запустите сервер на другом порту. В PowerShell из корня репозитория:
+
+```powershell
+$demoOutageFile = Join-Path $env:TEMP "mts-outages-$PID.json"
+.venv/Scripts/python scripts/make_demo.py --out $demoOutageFile
+$env:INCIDENTS_FILE = $demoOutageFile
+$env:TIME_MODE = 'real'
+$env:LLM_PROVIDER = 'rules'
+.venv/Scripts/python -m uvicorn backend.app.main:app --port 8010
+```
+
+В АРМ на `http://127.0.0.1:8010/` откройте вкладку «Сбои». У предложения должны быть три заявки из разных
+продуктов на общем компоненте. Одновременная заявка с другим кодом остаётся отдельно. Подтвердите предложение
+и откройте состав. На `http://127.0.0.1:8010/wall` должна появиться одна карточка сбоя, а четыре группы и их
+счётчики продолжат учитывать отдельные инциденты. После перезапуска с тем же файлом подтверждение сохраняется.
+Режим `rules` позволяет повторить сценарий без вызовов GigaChat. Для прогона с моделью используйте `gigachat`.
+
 Тесты: `.venv/Scripts/python -m pytest backend/tests -q`
 
 Документация: [CLAUDE.md](CLAUDE.md) · [docs/contract.md](docs/contract.md) · [docs/data-report.md](docs/data-report.md) · правила групп [config/rules.yaml](config/rules.yaml)

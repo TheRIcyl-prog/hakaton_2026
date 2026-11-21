@@ -20,6 +20,7 @@ from ..config import ROOT, Rules
 from . import dynamics as dyn_mod
 from . import duplicates as dup_mod
 from . import index as index_mod
+from . import outages as outage_mod
 from . import rules as rule_ai
 from .llm import (LLMWorker, Task, build_dup_prompt, build_incident_prompt, dup_key, dynamics_key, incident_fields,
                   risk_key, route_key, summary_key)
@@ -36,6 +37,7 @@ _worker: LLMWorker | None = None
 _history = dyn_mod.History(None)
 _status = {"provider": "rules", "state": "off", "label": "ИИ: правила (GigaChat выключен)", "error": None}
 _dup_groups: list[dict] = []
+_outage_candidates: list[dict] = []
 
 
 def setup() -> None:
@@ -69,10 +71,11 @@ def setup() -> None:
 
 def reset(worker: LLMWorker | None = None, history: dyn_mod.History | None = None) -> None:
     """Для тестов: чистое состояние без диска."""
-    global _worker, _history, _dup_groups
+    global _worker, _history, _dup_groups, _outage_candidates
     _worker = worker
     _history = history or dyn_mod.History(None)
     _dup_groups = []
+    _outage_candidates = []
 
 
 def status() -> dict:
@@ -86,6 +89,11 @@ def consume_dirty() -> bool:
 def duplicate_groups() -> list[dict]:
     """Группы дублей последнего пересчёта (для стены и подтверждения координатором)."""
     return list(_dup_groups)
+
+
+def outage_candidates() -> list[dict]:
+    """Предложения межпродуктовых сбоев последнего пересчёта."""
+    return [{**candidate, "ids": list(candidate["ids"])} for candidate in _outage_candidates]
 
 
 def history(inc_id: str) -> list[dict]:
@@ -111,13 +119,14 @@ def _events_source(refs):
 
 def enrich(incidents: dict[str, dict], now: datetime, rules: Rules, refs=None) -> None:
     """refs — справочники бэкенда (backend/app/refs.py); из них ИИ берёт только историю изменений."""
-    global _dup_groups
+    global _dup_groups, _outage_candidates
     at = _real_now()
     idx = index_mod.build(incidents, rules)
     events_of = _events_source(refs)
     if refs is None or getattr(refs, "history", None) is None:
         _history.observe(incidents, now)      # своя история — запасная, если бэкенд её не дал
     groups = dup_mod.find_groups(incidents, idx)
+    outages = outage_mod.find_candidates(incidents, idx)
     dup_of = {i: g for g in groups if not g.get("hidden") for i in g["ids"]}
 
     watched: list[tuple[dict, list[str], dict | None]] = []   # кандидаты в GigaChat
@@ -154,7 +163,9 @@ def enrich(incidents: dict[str, dict], now: datetime, rules: Rules, refs=None) -
 
     _dup_groups = [g for g in groups if not g.get("hidden")]
     if _worker:
-        _overlay_llm(incidents, watched, groups)
+        outages, tasks = outage_mod.refine(outages, incidents, idx, _worker)
+        _overlay_llm(incidents, watched, groups, tasks)
+    _outage_candidates = outages
     for inc in incidents.values():
         r = inc["ai"].get("route")
         if r:
@@ -172,13 +183,12 @@ def _dup_card(g: dict, inc_id: str, at: str) -> dict:
     }
 
 
-def _overlay_llm(incidents: dict[str, dict], watched: list, groups: list[dict]) -> None:
+def _overlay_llm(incidents: dict[str, dict], watched: list, groups: list[dict], tasks: list[Task]) -> None:
     """Накладывает готовые ответы GigaChat из кэша и ставит в очередь то, чего в кэше нет."""
     w = _worker
     risk_top = sorted((inc for inc, _, _ in watched if (inc["ai"]["risk"] or {}).get("level") == "high"),
                       key=lambda i: -i["ai"]["risk"]["score"])[:RISK_EXPLAIN_TOP]
     risk_top_ids = {i["id"] for i in risk_top}
-    tasks: list[Task] = []
     task_of: dict[str, str] = {}
 
     for inc, live, dyn in watched:

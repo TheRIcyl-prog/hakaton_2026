@@ -214,6 +214,27 @@ def confirm_duplicates(b: DuplicatesBody):
     return {"ok": True, "incidents": [store.incident(i) for i in dict.fromkeys([b.master_id, *b.ids])]}
 
 
+class ConfirmOutageBody(BaseModel):
+    candidate_id: str
+    by: str
+
+
+@app.post("/api/outages/confirm")
+def confirm_outage(body: ConfirmOutageBody):
+    try:
+        return itsm.confirm_outage(body.candidate_id, body.by)
+    except ItsmError as e:
+        raise HTTPException(e.status, str(e))
+
+
+@app.get("/api/outages/{outage_id}")
+def outage(outage_id: str):
+    result = store.outage(outage_id, include_incidents=True)
+    if result is None:
+        raise HTTPException(404, "нет такого сбоя")
+    return result
+
+
 @app.get("/api/meta")
 def meta():
     """Справочники для форм: статусы, переходы, приоритеты, SLA, команды."""
