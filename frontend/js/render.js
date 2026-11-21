@@ -247,17 +247,16 @@ export function renderBoard(snap, nowMs, ui) {
       const action = ui.actions ? ui.actions.get(id) : null;
       const compact = ui.wall && seenWall.has(id);
       if (ui.wall) seenWall.add(id);
-      const recurrence = ui.wall ? null : inc.recurrence;
-      const sig = [inc.hash, inc.groups.join(), inc.resolved_in.join(), JSON.stringify(inc.ai), inc.forecast && inc.forecast.level,
+      const sig = ui.wall ? [inc.hash, inc.groups.join(), inc.resolved_in.join(), JSON.stringify(inc.ai), inc.forecast && inc.forecast.level,
         claim ? claim.by : "", inc.work_log.length, changed ? changed.until : 0, action ? action.id : "", compact, hideDuplicate,
-        recurrence?.count, recurrence?.level, ui.wall ? "" : inc.labels?.join(",")].join("|");
+      ].join("|") : armCardSignature(inc, ui, changed, claim, action);
       let entry = cardCache.get(key);
       if (!entry || entry.sig !== sig) {
         const el = entry ? entry.el : document.createElement("article");
         el.dataset.id = id;
         if (compact) fillCompactWall(el, inc, g.key, nowMs, claim);
         else if (ui.wall) fillCardWall(el, inc, g.key, nowMs, changed, claim, hideDuplicate);
-        else fillCardArm(el, inc, g.key, nowMs, changed, claim, action, ui.act);
+        else fillCardArm(el, inc, g.key, nowMs, changed, claim, action, ui);
         if (ui.open) el.onclick = () => ui.open(id);
         entry = { sig, el };
         cardCache.set(key, entry);
@@ -323,15 +322,6 @@ export function fitColumns() {
 function lastEscalation(inc) {
   for (let i = inc.work_log.length - 1; i >= 0; i--) if (inc.work_log[i].action === "escalate") return inc.work_log[i];
   return null;
-}
-
-function linkTags(inc) {
-  const t = [];
-  if (inc.is_master) t.push("мастер");
-  if (inc.is_double) t.push("дубль");
-  const d = inc.ai && inc.ai.duplicates;
-  if (!inc.is_double && d && (Array.isArray(d) ? d.length : d.ids && d.ids.length)) t.push("дубли");
-  return t.map((x) => `<span class="tag-dup" title="Связанные инциденты">${x}</span>`).join("");
 }
 
 // Пять полей из задания — на карточке: продукт, возник, исполнитель «команда / сотрудник», статус, срок-таймер.
@@ -400,48 +390,61 @@ function stateNote(inc, nowMs) {
 const metaLine = (inc, nowMs, wall) =>
   `<div class="card-meta1">возник ${esc(fmtWhen(inc.created_at, nowMs))} · ${executor(inc, wall)} · <span class="st st-${inc.state_kind}">${esc(inc.state || "—")}</span></div>`;
 
-// Карточка АРМ
-function fillCardArm(el, inc, group, nowMs, changed, claim, action, act) {
-  if (inc.resolved_in.includes(group)) { fillResolvedLine(el, inc, nowMs, false); return; }
-  el.className = "card";
-  el.classList.toggle("is-critical", inc.priority_level === "critical");
-  el.classList.toggle("flash", !!changed && changed.until > Date.now());
-  const also = inc.groups.filter((g) => g !== group).map((g) => GROUP_SHORT[g]);
-  const t = cardTitle(inc);
-  const active = inc.state_kind === "active";
+function armCardSignature(inc, ui, changed, claim, action) {
+  return JSON.stringify([inc.hash, inc.groups, inc.resolved_in, inc.recurrence?.count, inc.recurrence?.level, inc.labels,
+    claim?.by, claim?.at, inc.work_log.length, changed?.until, changed?.texts, action?.id, action?.draft,
+    inc.forecast?.level, inc.forecast?.basis, ui.cardFields, ui.cardFields.ai ? inc.ai : null,
+    ui.cardFields.summary ? inc.ai?.summary : null]);
+}
 
+// Карточка АРМ
+function fillCardArm(el, inc, group, nowMs, changed, claim, action, ui) {
+  const fields = ui.cardFields;
+  const resolved = inc.resolved_in.includes(group);
+  const active = !resolved && inc.state_kind === "active";
+  const focused = el.contains(document.activeElement) ? document.activeElement.dataset.act : null;
+  el.className = resolved ? "card arm-card is-resolved" : "card arm-card";
+  el.classList.toggle("is-critical", !resolved && inc.priority_level === "critical");
+  el.classList.toggle("flash", !!changed && changed.until > Date.now());
+  const title = esc(inc.title || inc.short_description || "—");
+  const meta = [
+    fields.product && esc(inc.product),
+    fields.created && `возник ${esc(fmtWhen(inc.created_at, nowMs))}`,
+    fields.executor && executor(inc, false),
+    fields.state && !resolved && esc(inc.state),
+  ].filter(Boolean).join(" · ");
   const buttons = [];
   if (claim) buttons.push(`<span class="owner" title="координатор с ${esc(fmtTime(claim.at))}">в работе: ${esc(firstName(claim.by))}</span>`);
   else if (active) buttons.push(`<button class="btn small btn-take" data-act="claim" title="Клавиша В">Взять в работу</button>`);
   if (group === "coordinators" && active) buttons.push(`<button class="btn small btn-primary" data-act="transfer">Передать</button>`);
-  if (action && action.kind === "escalate" && active) buttons.push(`<button class="btn small" data-act="escalate">Эскалировать</button>`);
-  const esc_ = lastEscalation(inc);
-  const tags = [
-    incidentLabels(inc, 2),
-    esc_ ? `<span class="escalated" title="эскалирован">⇪ эскалирован ${esc(fmtTime(esc_.at))}</span>` : "",
-    also.length ? `<span class="also" title="также в группах">также: ${also.join(", ")}</span>` : "",
-  ].filter(Boolean).join("");
+  if (action?.kind === "escalate" && active) buttons.push(`<button class="btn small" data-act="escalate">Эскалировать</button>`);
+  const labels = fields.labels ? incidentLabels(inc, 2) : "";
 
   el.innerHTML = `
-    <div class="card-top">
-      <span class="card-product">${esc(inc.product || "—")}</span>
-      ${linkTags(inc)}
-      <span class="card-prio prio-${inc.priority_level}">${esc(inc.priority || "")}</span>
-      ${timer(inc, nowMs)}
+    <div class="card-top arm-card-head">
+      <span class="inc-id">${esc(inc.id)}</span>
+      <span class="card-prio prio-${esc(inc.priority_level)}">${esc(inc.priority || "—")}</span>
+      ${resolved ? `<span class="arm-card-resolved">Решён${fields.state && inc.resolved_at ? " в " + esc(fmtWhen(inc.resolved_at, nowMs)) : ""}</span>` : fields.deadline ? timer(inc, nowMs) : ""}
     </div>
-    <div class="card-title" title="${esc(inc.title || "")}">${t.ai ? aiTag(inc.ai) : ""}${esc(t.text)}</div>
-    ${metaLine(inc, nowMs, false)}
-    ${stateNote(inc, nowMs)}
-    ${aiLineFor(inc, group)}
-    ${buttons.length ? `<div class="card-btns">${buttons.join("")}</div>` : ""}
-    ${tags ? `<div class="card-foot">${tags}</div>` : ""}
-    ${changed && changed.until > Date.now() ? `<div class="changed">● ${esc(changed.texts.join(" · "))}</div>` : ""}`;
+    <button type="button" class="arm-card-title" data-act="open" title="${title}">${title}</button>
+    ${fields.summary && inc.ai?.summary ? `<div class="card-meta1 arm-card-summary">Краткая суть · ${esc(inc.ai.summary)}</div>` : ""}
+    ${meta ? `<div class="card-meta1">${meta}</div>` : ""}
+    ${fields.ai && !resolved ? aiLineFor(inc, group) : ""}
+    ${buttons.length || labels ? `<div class="card-btns">${buttons.join("")}${labels}</div>` : ""}
+    ${fields.updates && changed?.until > Date.now() ? `<div class="changed">● ${esc(changed.texts.join(" · "))}</div>` : ""}`;
 
-  const on = (sel, fn) => { const b = el.querySelector(sel); if (b) b.onclick = (e) => { e.stopPropagation(); fn(); }; };
-  if (act) {
-    on("[data-act=claim]", () => act.claim(inc.id));
-    on("[data-act=transfer]", () => act.transfer(inc.id));
-    on("[data-act=escalate]", () => act.escalate(inc.id, action && action.draft));
+  const on = (name, fn) => {
+    const button = el.querySelector(`[data-act=${name}]`);
+    if (button) button.onclick = (event) => { event.stopPropagation(); fn(); };
+  };
+  if (ui.act) {
+    on("claim", () => ui.act.claim(inc.id));
+    on("transfer", () => ui.act.transfer(inc.id));
+    on("escalate", () => ui.act.escalate(inc.id, action?.draft));
+  }
+  if (focused) {
+    const button = [...el.querySelectorAll("button")].find((node) => node.dataset.act === focused);
+    (button || el.querySelector(".arm-card-title")).focus({ preventScroll: true });
   }
 }
 
@@ -542,17 +545,26 @@ export function renderMine(snap, el, me, nowMs, ui) {
     || (Date.parse(x.deadline || "2999-01-01") - Date.parse(y.deadline || "2999-01-01")));
   if (!me) { el.innerHTML = `<div class="actions-empty">Представьтесь — тогда здесь будут инциденты, которые вы взяли в работу</div>`; return 0; }
   if (!incs.length) { el.innerHTML = `<div class="actions-empty">Вы пока ничего не взяли в работу. «Взять в работу» — на карточке, в панели или клавиша В</div>`; return 0; }
-  el.innerHTML = "";
-  for (const inc of incs) {
-    const card = document.createElement("article");
+  const existing = new Map([...el.querySelectorAll(".arm-card")].map((node) => [node.dataset.id, node]));
+  el.querySelector(".actions-empty")?.remove();
+  incs.forEach((inc, i) => {
+    const card = existing.get(inc.id) || document.createElement("article");
+    existing.delete(inc.id);
     card.dataset.id = inc.id;
     const group = inc.groups.find((g) => !inc.resolved_in.includes(g)) || inc.groups[0] || "";
     const action = ui.actions ? ui.actions.get(inc.id) : null;
-    fillCardArm(card, inc, group, nowMs, ui.changed.get(inc.id), ownerOf(inc, snap), action, ui.act);
+    const changed = ui.changed.get(inc.id);
+    const claim = ownerOf(inc, snap);
+    const sig = armCardSignature(inc, ui, changed, claim, action);
+    if (card.dataset.renderKey !== sig) {
+      fillCardArm(card, inc, group, nowMs, changed, claim, action, ui);
+      card.dataset.renderKey = sig;
+    }
     card.classList.toggle("selected", ui.selected === inc.id);
     card.onclick = () => ui.open(inc.id);
-    el.appendChild(card);
-  }
+    if (el.children[i] !== card) el.insertBefore(card, el.children[i] || null);
+  });
+  for (const card of existing.values()) card.remove();
   return incs.length;
 }
 

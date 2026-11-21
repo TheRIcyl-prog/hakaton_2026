@@ -22,9 +22,10 @@
       <div class="status" id="status"></div>
       <div class="menu-wrap">
         <button class="icon-btn" id="me" title="Сменить имя"></button>
-        <button class="icon-btn" id="menu-btn" title="Ещё">⋯</button>
+        <button class="icon-btn" id="menu-btn" aria-label="Ещё" aria-expanded="false" aria-controls="menu-pop" title="Ещё">⋯</button>
         <div class="popover menu-pop hidden" id="menu-pop">
           <a href="/wall" target="_blank">🖥 Открыть видеостену</a>
+          <button type="button" id="card-settings-btn" aria-haspopup="dialog">Поля карточек</button>
           <button id="export-btn">⭳ Экспорт файла инцидентов</button>
           <button id="import-btn">⭱ Импорт файла инцидентов</button>
           <input type="file" id="import-input" accept=".json,application/json" hidden>
@@ -70,6 +71,16 @@
   </div>
 
   <div class="modal hidden" id="modal"></div>
+  <dialog class="card-settings" id="card-settings" aria-labelledby="card-settings-title">
+    <h2 id="card-settings-title">Поля карточек</h2>
+    <p id="card-settings-profile"></p>
+    <p>Номер, заголовок, приоритет и действия видны всегда.</p>
+    <fieldset><legend>Дополнительные поля</legend><div id="card-settings-fields"></div></fieldset>
+    <div class="modal-btns">
+      <button type="button" class="btn" id="card-settings-reset">По умолчанию</button>
+      <form method="dialog"><button class="btn btn-primary">Готово</button></form>
+    </div>
+  </dialog>
   <div class="toasts" id="toasts"></div>
 
   <div class="overlay" id="start-overlay">

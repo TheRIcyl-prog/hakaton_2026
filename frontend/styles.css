@@ -596,6 +596,23 @@ body.wall.no-cursor, body.wall.no-cursor * { cursor: none !important; }
 .panel .panel-head .escalated { font-size: 12px; }
 .panel .wl small { color: var(--muted); }
 
+.arm .arm-card { padding: 5px 8px; min-width: 0; }
+.arm-card-head { justify-content: flex-start; gap: 2px 6px; }
+.arm-card-head .inc-id { min-width: 0; overflow-wrap: anywhere; font-size: 11px; }
+.arm-card-head .countdown, .arm-card-head .no-deadline { font-size: 12px; }
+.arm-card-resolved { margin-left: auto; color: var(--green); font-size: 12px; }
+.arm-card-title { display: block; width: 100%; margin: 2px 0; padding: 0; border: 0; background: none; color: var(--text); font: inherit; font-weight: 500; text-align: left; cursor: pointer; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.arm-card-title:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.arm-card .card-btns { gap: 3px 5px; margin-top: 3px; }
+.arm-card .card-btns .btn { padding: 2px 6px; }
+.card-settings { width: min(420px, calc(100vw - 32px)); padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); }
+.card-settings::backdrop { background: #000a; }
+.card-settings h2 { margin: 0; font: 700 18px var(--font-wide); }
+.card-settings p { margin: 6px 0; color: var(--muted); overflow-wrap: anywhere; }
+.card-settings fieldset { min-width: 0; margin: 12px 0 0; border: 1px solid var(--line); border-radius: 6px; }
+.card-settings label { display: flex; gap: 8px; align-items: center; padding: 3px 0; cursor: pointer; }
+.card-settings form { margin: 0; }
+
 /* Сбои v2 */
 .wall-outages { flex: none; min-width: 0; padding: 4px 20px 0; }
 .wall-outages-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 5px; }

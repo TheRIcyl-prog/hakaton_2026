@@ -9,6 +9,7 @@ import * as S from "./search.js";
 import { renderPanel } from "./panel.js";
 import { mountOutages } from "./outages.js";
 import { mountQueue } from "./queue.js";
+import { mountCardSettings } from "./card-settings.js";
 
 const HIGHLIGHT_MS = 15000;
 const VIEW_KEY = "mi-dashboard:view";
@@ -40,6 +41,8 @@ const nowMs = () => Date.now() + state.offsetMs;
 const filtersEl = document.getElementById("filters");
 const outagesEl = document.getElementById("outages");
 const queueEl = document.getElementById("queue");
+const settingsDialog = document.getElementById("card-settings");
+const cardSettings = mountCardSettings(settingsDialog, { getName: getMe, onChange: renderMain });
 const renderOutages = mountOutages(outagesEl, { open: openDrawer, refresh: () => refreshSnapshot(), needName, toast: R.toast });
 const queue = mountQueue(queueEl, {
   getSnapshot: () => state.snap, open: (id, isCurrent) => openDrawer(id, undefined, isCurrent), copy, needName, toast: R.toast,
@@ -77,7 +80,11 @@ const refreshSnapshot = startPolling(
     R.renderStatus(state);
   },
 );
-window.addEventListener("storage", () => { if (state.snap) queue.syncBy(); });
+window.addEventListener("storage", () => {
+  if (!state.snap) return;
+  queue.syncBy();
+  if (ui.cardFields !== cardSettings.fields()) renderMain();
+});
 
 F.mountFilters(filtersEl, {
   change: () => { ui.limits = {}; state.serverTotal = null; renderMain(); updateServerTotal(); if (state.listMode === "all") openList("all"); },
@@ -166,6 +173,7 @@ function renderMain() {
   const snap = state.snap;
   if (!snap) return;
   const now = nowMs();
+  ui.cardFields = cardSettings.fields();
   ui.predicate = F.makePredicate(snap, now, getMe());
   ui.selected = state.openId;
   ui.alarmIds = new Set(state.alerts.map((a) => a.incident_id));
@@ -383,9 +391,16 @@ Sound.loadPrefs("arm", { sound: true, voice: true });
 const paintSound = Sound.bindToggles(document.getElementById("sound-btn"), document.getElementById("voice-btn"));
 
 const menuPop = document.getElementById("menu-pop");
-document.getElementById("menu-btn").onclick = (e) => { e.stopPropagation(); menuPop.classList.toggle("hidden"); };
+const menuBtn = document.getElementById("menu-btn");
+function setMenu(open) {
+  menuPop.classList.toggle("hidden", !open);
+  menuBtn.setAttribute("aria-expanded", String(open));
+}
+menuBtn.onclick = (e) => { e.stopPropagation(); setMenu(menuPop.classList.contains("hidden")); };
 menuPop.onclick = (e) => e.stopPropagation();
-document.addEventListener("click", () => menuPop.classList.add("hidden"));
+document.addEventListener("click", () => setMenu(false));
+document.getElementById("card-settings-btn").onclick = () => { setMenu(false); cardSettings.open(); };
+settingsDialog.addEventListener("close", () => menuBtn.focus());
 document.querySelectorAll(".tab[data-view]").forEach((t) => (t.onclick = () => setView(t.dataset.view)));
 
 // ---------- начало смены ----------
@@ -418,9 +433,9 @@ document.getElementById("me").onclick = () => {
 };
 
 // Импорт / экспорт файла инцидентов
-document.getElementById("export-btn").onclick = () => { menuPop.classList.add("hidden"); window.location.href = "/api/export"; };
+document.getElementById("export-btn").onclick = () => { setMenu(false); window.location.href = "/api/export"; };
 const importInput = document.getElementById("import-input");
-document.getElementById("import-btn").onclick = () => { menuPop.classList.add("hidden"); importInput.click(); };
+document.getElementById("import-btn").onclick = () => { setMenu(false); importInput.click(); };
 importInput.onchange = async () => {
   const f = importInput.files[0];
   importInput.value = "";
@@ -448,6 +463,13 @@ search.oninput = () => {
 
 // Горячие клавиши: В — взять в работу открытый инцидент (или верхнюю тревогу), Esc — закрыть, / — поиск
 document.addEventListener("keydown", (e) => {
+  if (settingsDialog.open) return;
+  if (e.key === "Escape" && !menuPop.classList.contains("hidden")) {
+    setMenu(false);
+    menuBtn.focus();
+    return;
+  }
+  if (e.key === "Enter" && e.target.closest?.(".arm-card button, #menu-btn, #menu-pop")) return;
   const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName);
   if (e.key === "Escape") {
     if (!document.getElementById("modal").classList.contains("hidden")) closeModal();
