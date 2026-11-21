@@ -82,6 +82,7 @@ export const api = {
   confirmDups: (master_id, ids) => send("POST", "/api/duplicates/confirm", { master_id, ids, by: getMe() }),
   confirmOutage: (candidate_id) => send("POST", "/api/outages/confirm", { candidate_id, by: getMe() }),
   outage: (id) => send("GET", `/api/outages/${encodeURIComponent(id)}`),
+  outageAction: (id, fields) => send("POST", `/api/outages/${encodeURIComponent(id)}/actions`, { ...fields, by: getMe() }),
   meta: () => send("GET", "/api/meta"),
   incident: (id) => send("GET", `/api/incidents/${encodeURIComponent(id)}`),
 };

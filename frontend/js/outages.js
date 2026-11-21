@@ -71,9 +71,23 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
       <div class="outage-description">${countLabel(outage.incident_ids.length)}${outage.products.length ? ` · ${esc(outage.products.join(", "))}` : ""}</div>
       ${outage.reason ? `<p>${esc(outage.reason)}</p>` : ""}
       ${source ? `<div class="outage-description">Источник · ${source}</div>` : ""}
-      <details data-key="${esc(key)}"><summary>Состав · ${detail?.outage?.incident_ids.length ?? outage.incident_ids.length}</summary>${composition}</details>
+      <details data-key="${esc(key)}"><summary>Состав · ${detail?.outage?.incident_ids.length ?? outage.incident_ids.length}</summary>${composition}
+        ${!candidate && detail?.outage?.status === "active" ? outageControls() : ""}</details>
       ${candidate ? `<button class="btn btn-primary small" data-confirm${busy || refreshRequired ? " disabled" : ""}>Да, это один сбой</button>` : ""}
     </article>`;
+  }
+
+  function outageControls() {
+    const disabled = busy || refreshRequired ? " disabled" : "";
+    return `<div class="action-btns" aria-label="Действия над активными заявками сбоя">
+      <button type="button" class="btn small" data-operation="claim"${disabled}>Взять весь сбой</button>
+      <button type="button" class="btn small" data-operation="escalate"${disabled}>Эскалировать сбой</button>
+      <select class="select" data-outage-team aria-label="Команда для сбоя"${disabled}>
+        <option value="">Выберите команду</option>
+        ${(snap.teams || []).map((team) => `<option value="${esc(team)}">${esc(team)}</option>`).join("")}
+      </select>
+      <button type="button" class="btn small" data-operation="assign"${disabled}>Передать активные заявки</button>
+    </div>`;
   }
 
   function paint() {
@@ -147,6 +161,29 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
     await refreshSnapshot();
   }
 
+  async function actOnOutage(id, operation, team) {
+    if (busy || refreshRequired || needName()) return;
+    const detail = details.get(id);
+    if (!detail?.outage || detail.outage.status !== "active") return;
+    if (operation === "assign" && !team) { status.textContent = "Сначала выберите команду."; return; }
+    if (operation === "assign" && !window.confirm(`Передать все активные заявки сбоя в «${team}»?`)) return;
+    const expected_hashes = Object.fromEntries([...detail.incidents.values()]
+      .filter((inc) => inc.state_kind === "active").map((inc) => [inc.id, inc.hash]));
+    busy = true;
+    paint();
+    try {
+      const outage = await api.outageAction(id, { operation, team: team || null, expected_hashes });
+      details.set(id, { outage, incidents: new Map(outage.incidents.map((inc) => [inc.id, inc])) });
+      snapshotMessage = operation === "claim" ? "Активные заявки взяты в работу." : operation === "assign"
+        ? "Активные заявки переданы." : "Эскалация записана в журнал.";
+    } catch (e) {
+      if (e.status !== 409) { busy = false; status.textContent = e.message; paint(); return; }
+      details.delete(id);
+      snapshotMessage = e.message || "Сбой изменился. Проверьте актуальный состав.";
+    }
+    await refreshSnapshot();
+  }
+
   list.addEventListener("toggle", (event) => {
     const node = event.target;
     if (!node.open || !list.contains(node)) return;
@@ -159,6 +196,10 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
     if (!button) return;
     const id = button.closest("[data-kind]").dataset.id;
     if (button.hasAttribute("data-confirm")) { confirmCandidate(id); return; }
+    if (button.dataset.operation) {
+      actOnOutage(id, button.dataset.operation, button.closest("[data-kind]").querySelector("[data-outage-team]")?.value);
+      return;
+    }
     if (button.hasAttribute("data-retry")) { details.delete(id); loadDetails(id); return; }
     const incidentId = button.dataset.incident;
     const request = ++opening;

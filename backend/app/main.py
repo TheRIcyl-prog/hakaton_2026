@@ -17,6 +17,7 @@ from .config import ROOT, Settings, load_rules
 from .desk import DeskState
 from .history import History
 from .itsm import Itsm, ItsmError
+from .outage_api import outage_action_router
 from .queue_preferences import Operation, QueuePreferences
 from .store import Store
 
@@ -51,6 +52,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="МТС · дашборд координатора", lifespan=lifespan)
+app.include_router(outage_action_router(lambda: itsm))
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 

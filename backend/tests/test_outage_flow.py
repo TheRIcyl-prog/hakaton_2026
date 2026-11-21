@@ -58,3 +58,48 @@ def test_cross_product_outage_through_api_and_restart(make_store, rules, monkeyp
     detail = client.get(f"/api/outages/{outage['id']}")
     assert detail.status_code == 200, detail.text
     assert {item["id"] for item in detail.json()["incidents"]} == members
+
+
+def test_group_actions_are_atomic_and_skip_completed_members(make_store, rules, monkeypatch):
+    from backend.app import main
+
+    link = {"id": "group", "master_id": "INC001", "name": "Сбой", "reason": "Общий компонент", "source": "rules"}
+    records = [make("INC001", outage=link), make("INC002", outage=link),
+               make("INC003", state_id=7, outage=link), make("INC004", team="КЦ ИТ Сеть")]
+    store, path = make_store(records)
+    monkeypatch.setattr(main, "store", store)
+    monkeypatch.setattr(main, "itsm", Itsm(path, rules, store.clock.now, store=store))
+    client = TestClient(main.app)
+    url = "/api/outages/group/actions"
+
+    def hashes(outage):
+        return {i["id"]: i["hash"] for i in outage["incidents"] if i["state_kind"] == "active"}
+
+    def saved():
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    previous = hashes(client.get("/api/outages/group").json())
+    records[1]["header"] = "Изменено во внешней системе"
+    write(path, records)
+    claim = {"by": "Ольга", "operation": "claim", "expected_hashes": previous}
+    assert client.post(url, json=claim).status_code == 409
+    assert saved() == records
+
+    store.poll()
+    claim["expected_hashes"] = hashes(client.get("/api/outages/group").json())
+    response = client.post(url, json=claim)
+    assert response.status_code == 200, response.text
+    after_claim = saved()
+    assert [i["coordinator"]["name"] for i in after_claim[:2]] == ["Ольга", "Ольга"]
+    escalation = {"operation": "escalate", "by": "Иван", "expected_hashes": hashes(response.json())}
+    assert client.post(url, json=escalation).status_code == 409
+    assert saved() == after_claim
+
+    response = client.post(url, json={**escalation, "by": "Ольга"})
+    assert response.status_code == 200, response.text
+    assert all(i["workLog"][-1]["escalation_scope"] for i in saved()[:2])
+    response = client.post(url, json={"operation": "assign", "team": "КЦ ИТ Сеть", "by": "Ольга",
+                                      "expected_hashes": hashes(response.json())})
+    assert response.status_code == 200, response.text
+    assert all(i["assignedGroupName"] == "КЦ ИТ Сеть" and "coordinator" not in i for i in saved()[:2])
+    assert saved()[2:] == records[2:]

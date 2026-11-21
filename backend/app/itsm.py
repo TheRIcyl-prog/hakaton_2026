@@ -25,7 +25,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .adapter import adapt_all, content_hash, iso, norm_team, outage_link, parse_dt, resolve_priority_id, to_str, unwrap
+from .adapter import (adapt_all, content_hash, iso, norm_team, outage_link, parse_dt, resolve_priority_id,
+                      resolve_state_id, to_str, unwrap)
 from .config import Rules
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -205,6 +206,62 @@ class Itsm:
             assert outage is not None
             return outage
 
+    def act_on_outage(self, outage_id: str, operation: str, by: str, expected_hashes: dict[str, str],
+                      team: str | None = None, comment: str | None = None) -> dict:
+        """Проверяет все активные записи до единственной записи в файл."""
+        by, team = by.strip(), (team or "").strip()
+        if not by or operation not in ("claim", "assign", "escalate"):
+            raise ItsmError("укажите координатора и действие")
+        if operation == "assign" and not team:
+            raise ItsmError("не выбрана команда")
+        if self.store is None:
+            raise ItsmError("сбой недоступен", 404)
+        with self.store.write_lock:
+            data = self._load()
+            positions = {to_str(rec.get("id")): i for i, rec in enumerate(data) if isinstance(rec, dict)}
+            members = [(inc_id, i) for inc_id, i in positions.items() if inc_id and
+                       (outage_link(data[i].get("outage")) or {}).get("id") == outage_id]
+            if not members:
+                raise ItsmError("сбой не найден", 404)
+            active = [(inc_id, i) for inc_id, i in members
+                      if self.rules.state_kind(resolve_state_id(data[i], self.rules)) == "active"]
+            if not active or {inc_id for inc_id, _ in active} != set(expected_hashes):
+                raise ItsmError("состав активных заявок изменился — откройте сбой заново", 409)
+            if operation == "assign" and team not in {row.get("assignedGroupName") for row in data if isinstance(row, dict)}:
+                raise ItsmError("неизвестная команда")
+            for inc_id, i in active:
+                current = data[i]
+                if content_hash(current) != expected_hashes[inc_id]:
+                    raise ItsmError("заявки сбоя изменились — откройте сбой заново", 409)
+                owner = current.get("coordinator")
+                if isinstance(owner, dict) and owner.get("name") not in (None, "", by):
+                    raise ItsmError(f"{inc_id} уже в работе у другого координатора", 409)
+
+            now = self.now_fn()
+            updated = list(data)
+            suffix = f" (сбой {outage_id})"
+            changed = False
+            for _, i in active:
+                rec = copy.deepcopy(data[i])
+                if operation == "claim":
+                    owner = rec.get("coordinator")
+                    if isinstance(owner, dict) and owner.get("name") == by:
+                        continue
+                    rec["coordinator"] = {"name": by, "at": _fmt(now)}
+                    action, message, details = "take", "взял в работу", {}
+                elif operation == "assign":
+                    action, message, details = _assign_record(rec, now, team, None, comment)
+                else:
+                    action, message, details = self._escalate_record(rec, now, comment)
+                log = rec.get("workLog") if isinstance(rec.get("workLog"), list) else []
+                rec["workLog"] = [*log, {"at": _fmt(now), "author": by, "action": action,
+                                         "text": message + suffix, **details}]
+                updated[i] = rec
+                changed = True
+            if changed:
+                self._commit(updated, by)
+            return self.store.outage(outage_id, include_incidents=True) or {}
+
     # ---------- «Взять в работу» / «Отпустить» (наше поле coordinator) ----------
     def take(self, inc_id: str, by: str, expected_hash: str | None = None, force: bool = False) -> dict:
         def mutate(rec: dict, now: datetime):
@@ -245,20 +302,7 @@ class Itsm:
                 raise ItsmError("инцидент закрыт — переназначить нельзя, заведите новый")
             if sid == 7:
                 raise ItsmError("инцидент завершён — сначала верните его в работу")
-            old = rec.get("assignedGroupName")
-            rec["assignedGroupName"] = team
-            name = (assignee or "").strip()
-            rec["assignedEmployee"] = name or None
-            rec["assignedEmployeeLogin"] = None
-            rec["lastAssignmentToTeamDateTime"] = _fmt(now)
-            if sid == 2:  # новая команда ещё не взяла в работу
-                _set_state(rec, 0)
-            coord = rec.pop("coordinator", None)  # «Передать» снимает «координатора» (п. 7)
-            text = f"передан: {old or '—'} → {team}" + (f" ({name})" if name else "")
-            if isinstance(coord, dict) and coord.get("name"):
-                text += f"; снят с координатора {coord['name']}"
-            text += f". {comment.strip()}" if comment and comment.strip() else ""
-            return "assign", text, {"kind": "team", "before": old, "after": team}
+            return _assign_record(rec, now, team, assignee, comment)
 
         return self._update(inc_id, by, mutate, expected_hash)
 
@@ -334,13 +378,16 @@ class Itsm:
         def mutate(rec: dict, now: datetime):
             if _int(rec.get("stateId")) in DONE:
                 raise ItsmError("инцидент уже решён — эскалация не нужна")
-            team = to_str(rec.get("assignedGroupName"))
-            scope = {"team": norm_team(team), "deadline": iso(parse_dt(rec.get("deadline"))),
-                     "priority_id": resolve_priority_id(rec, self.rules)}
-            text = (comment or "").strip()[:1000] or f"эскалирован руководителю группы «{team or '—'}»"
-            return "escalate", text, {"at": iso(now), "escalation_scope": scope}
+            return self._escalate_record(rec, now, comment)
 
         return self._update(inc_id, by, mutate, expected_hash)
+
+    def _escalate_record(self, rec: dict, now: datetime, comment: str | None) -> tuple:
+        team = to_str(rec.get("assignedGroupName"))
+        scope = {"team": norm_team(team), "deadline": iso(parse_dt(rec.get("deadline"))),
+                 "priority_id": resolve_priority_id(rec, self.rules)}
+        text = (comment or "").strip()[:1000] or f"эскалирован руководителю группы «{team or '—'}»"
+        return "escalate", text, {"at": iso(now), "escalation_scope": scope}
 
     # ---------- импорт / экспорт ----------
     def import_file(self, text: str, backup_dir: Path) -> int:
@@ -375,3 +422,19 @@ def _set_state(rec: dict, state_id: int) -> None:
     rec["stateId"] = state_id
     rec["state"] = STATE_NAMES[state_id]
     rec["stateEnum"] = STATE_ENUM[state_id]
+
+
+def _assign_record(rec: dict, now: datetime, team: str, assignee: str | None, comment: str | None) -> tuple:
+    old = rec.get("assignedGroupName")
+    name = (assignee or "").strip()
+    rec.update(assignedGroupName=team, assignedEmployee=name or None, assignedEmployeeLogin=None,
+               lastAssignmentToTeamDateTime=_fmt(now))
+    if _int(rec.get("stateId")) == 2:
+        _set_state(rec, 0)
+    coord = rec.pop("coordinator", None)
+    text = f"передан: {old or '—'} → {team}" + (f" ({name})" if name else "")
+    if isinstance(coord, dict) and coord.get("name"):
+        text += f"; снят с координатора {coord['name']}"
+    if comment and comment.strip():
+        text += f". {comment.strip()}"
+    return "assign", text, {"kind": "team", "before": old, "after": team}
