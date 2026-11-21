@@ -3,6 +3,7 @@
 // действия координатора (только взять/отпустить, передать, эскалировать, комментарий) и ссылка в ITSM.
 import { esc, fmtDateTime, fmtTime, fmtWhen, plural } from "./format.js";
 import { ownerOf } from "./render.js";
+import { incidentLabels } from "./incident-labels.js";
 
 const GROUP_SHORT = { critical: "критические", coordinators: "на координаторах", high: "высокий", research: "исследование" };
 const FORECAST_TEXT = { ok: "успевают", risk: "срок на исходе", breach: "прогноз: не успеют", overdue: "срок нарушен" };
@@ -130,6 +131,7 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
   const canTransfer = inc.state_kind === "active" || inc.state_kind === "research";
   const links = [inc.is_master && "мастер", inc.is_double && "дубль", inc.is_reason && "дочерний", inc.is_effect && "причина других"].filter(Boolean);
   const esc_ = inc.work_log.slice().reverse().find((w) => w.action === "escalate");
+  const labels = incidentLabels(inc);
 
   el.innerHTML = `
     <div class="panel-head">
@@ -141,6 +143,7 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
     <h2>${esc(inc.product || "—")}</h2>
     <div class="panel-title">${esc(inc.title)}</div>
     <div class="panel-sub"><b class="inc-id">${esc(inc.id)}</b> <span class="linklike" data-act="copy-id">скопировать</span> · ${groups}</div>
+    ${labels ? `<div class="panel-labels" aria-label="Метки">${labels}</div>` : ""}
 
     ${alert ? `<div class="panel-alert ${alert.group}">🔔 ${alert.group === "critical" ? "Критический — никто не взял" : "Назначен на координаторов — никто не взял"} <button class="btn small btn-take" data-act="claim">Взять в работу</button></div>` : ""}
 

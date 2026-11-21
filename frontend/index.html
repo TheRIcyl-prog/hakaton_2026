@@ -38,8 +38,8 @@
 
   <section class="toolbar">
     <div class="tabs">
-      <button class="tab active" data-view="board">Группы</button>
-      <button class="tab" data-view="queue">Что делать сейчас <b id="queue-count"></b></button>
+      <button class="tab active" data-view="queue">Очередь <b id="queue-count"></b></button>
+      <button class="tab" data-view="board">Группы</button>
       <button class="tab" data-view="outages">Сбои</button>
       <button class="tab" data-view="mine">Мои <b id="mine-count" class="soft"></b></button>
       <button class="tab" data-view="feed">Лента <b id="feed-count"></b></button>
@@ -48,8 +48,14 @@
   </section>
 
   <div class="workspace" id="workspace">
-    <main class="board" id="board"></main>
-    <section class="queue hidden" id="queue"></section>
+    <main class="board hidden" id="board"></main>
+    <section class="personal-queue" id="queue" aria-label="Очередь координатора">
+      <div class="queue-feedback" hidden>
+        <span id="queue-status" role="status"></span>
+        <button type="button" class="btn small" id="queue-retry" hidden>Обновить</button>
+      </div>
+      <div class="queue" id="queue-items"></div>
+    </section>
     <section class="outages-view hidden" id="outages" aria-label="Сбои">
       <div class="outage-feedback">
         <span id="outage-status" role="status"></span>

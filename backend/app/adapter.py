@@ -141,6 +141,32 @@ def _work_log(value: Any) -> list[dict]:
     return out
 
 
+def escalation_scope_changed(change: dict) -> bool:
+    kind = change.get("kind")
+    before, after = change.get("before"), change.get("after")
+    if kind == "team":
+        return norm_team(to_str(before)) != norm_team(to_str(after))
+    if kind == "deadline":
+        return parse_dt(before) != parse_dt(after)
+    if kind == "priority":
+        return change.get("before_id", before) != change.get("after_id", after)
+    return kind == "reopen"
+
+
+def _latest_escalation(value: Any) -> dict | None:
+    if not isinstance(value, list):
+        return None
+    for entry in reversed(value):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("action") == "escalate":
+            if at := parse_dt(entry.get("at")):
+                return {"at": at, "scope": entry.get("escalation_scope")}
+        if escalation_scope_changed(entry):
+            break
+    return None
+
+
 def _coordinator(value: Any) -> dict | None:
     """Наше поле «координатор»: кто из координаторов взял инцидент в работу (decisions.md, п. 7)."""
     if not isinstance(value, dict):
@@ -225,6 +251,8 @@ def adapt_one(raw: dict, rules: Rules, itsm_template: str) -> dict | None:
     link = outage_link(raw.get("outage"))
     if link is not None:
         incident["outage"] = link
+    if escalation := _latest_escalation(raw.get("workLog")):
+        incident["_escalation"] = escalation
     return incident
 
 

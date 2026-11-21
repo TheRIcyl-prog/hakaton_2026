@@ -34,7 +34,10 @@ from .diff import DONE_KINDS, diff
 from .forecast import forecast_all
 from .groups import assign_groups
 from .history import History
+from .labels import apply_labels
 from .outages import Outage, OutageCandidate, build_candidates, build_outages
+from .queue import build_queue
+from .queue_preferences import QueuePreferences
 from .recurrences import apply_recurrences
 from .refs import Refs
 
@@ -57,7 +60,7 @@ def _utcnow() -> datetime:
 
 class Store:
     def __init__(self, settings: Settings, rules: Rules, clock: Clock | None = None, desk: DeskState | None = None,
-                 history: History | None = None):
+                 history: History | None = None, queue_preferences: QueuePreferences | None = None):
         self.settings = settings
         self.rules = rules
         self.clock = clock or Clock(settings.time_mode, adapter.parse_dt(settings.export_now))
@@ -66,6 +69,7 @@ class Store:
         self.desk = desk or DeskState(None)
         self.desk.now_fn = self.clock.now
         self.history = history or History(None)
+        self.queue_preferences = queue_preferences or QueuePreferences()
 
         self.incidents: dict[str, dict] = {}
         self.raw_by_id: dict[str, dict] = {}
@@ -224,8 +228,8 @@ class Store:
         self.history.record(old if self.loaded else {}, new_incidents, changed, now)  # при первой загрузке — засев из workLog
         self.groups = assign_groups(new_incidents, self.rules, now, self.seen_resolved)
         self.refs = Refs(new_incidents, now, changed, removed, self.history)
-        self._derive(new_incidents, now)
         apply_recurrences(new_incidents, self.rules.coordinators_team)
+        self._derive(new_incidents, now)
         self._outages = build_outages(new_incidents, self.seen_resolved, self.history)
         self._visible_outages = self._outages_in_snapshot(now)
 
@@ -249,6 +253,7 @@ class Store:
         forecast_all(incidents, now, refs)
         self._enrich(incidents, now)
         self.actions = build_actions(incidents, now)
+        apply_labels(incidents, self.history, now)
         self._last_ai = time.monotonic()
 
     def _enrich(self, incidents: dict[str, dict], now: datetime) -> None:
@@ -501,6 +506,14 @@ class Store:
             return {"total": len(matched), "items": page, "offset": offset, "limit": limit, "now": adapter.iso(now)}
 
     # ---------- одиночные запросы ----------
+    def queue(self, by: str = "") -> list[dict]:
+        by = by.strip().casefold()
+        hidden = self.queue_preferences.hidden(by)
+        with self.lock:
+            items = build_queue(self.incidents, self.actions, self._outage_candidates.values(), self.history,
+                                by, self.clock.now())
+        return [item for item in items if item["id"] not in hidden]
+
     def events_after(self, seq: int) -> list[dict]:
         with self.lock:
             return [e for e in self.events if e["seq"] > seq]
@@ -528,7 +541,9 @@ class Store:
 
 
 def _public(inc: dict) -> dict:
-    """Служебные ключи ИИ (с «_») в ответ не отдаём."""
+    """Убрать служебные поля перед выдачей."""
+    if "_escalation" in inc:
+        inc = {key: value for key, value in inc.items() if key != "_escalation"}
     ai = inc.get("ai")
     route = ai.get("route") if isinstance(ai, dict) else None
     if isinstance(route, dict) and any(k.startswith("_") for k in route):

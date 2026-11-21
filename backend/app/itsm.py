@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .adapter import adapt_all, content_hash, iso, outage_link, parse_dt, to_str, unwrap
+from .adapter import adapt_all, content_hash, iso, norm_team, outage_link, parse_dt, resolve_priority_id, to_str, unwrap
 from .config import Rules
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -330,13 +330,17 @@ class Itsm:
             raise ItsmError("пустой комментарий")
         return self._update(inc_id, by, lambda rec, now: ("comment", text.strip()[:1000]))
 
-    def escalate(self, inc_id: str, by: str, comment: str | None = None) -> dict:
+    def escalate(self, inc_id: str, by: str, comment: str | None = None, expected_hash: str | None = None) -> dict:
         def mutate(rec: dict, now: datetime):
             if _int(rec.get("stateId")) in DONE:
                 raise ItsmError("инцидент уже решён — эскалация не нужна")
-            return "escalate", (comment or "").strip()[:1000] or f"эскалирован руководителю группы «{rec.get('assignedGroupName') or '—'}»"
+            team = to_str(rec.get("assignedGroupName"))
+            scope = {"team": norm_team(team), "deadline": iso(parse_dt(rec.get("deadline"))),
+                     "priority_id": resolve_priority_id(rec, self.rules)}
+            text = (comment or "").strip()[:1000] or f"эскалирован руководителю группы «{team or '—'}»"
+            return "escalate", text, {"at": iso(now), "escalation_scope": scope}
 
-        return self._update(inc_id, by, mutate)
+        return self._update(inc_id, by, mutate, expected_hash)
 
     # ---------- импорт / экспорт ----------
     def import_file(self, text: str, backup_dir: Path) -> int:

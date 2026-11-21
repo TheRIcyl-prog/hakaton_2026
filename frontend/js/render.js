@@ -3,6 +3,7 @@
 // и не сбрасывать подсветку; таймеры обновляются отдельно раз в секунду.
 import { esc, fmtDateTime, fmtTime, fmtLeft, fmtTimer, fmtWhen, plural, shortId } from "./format.js";
 import { isDup } from "./filters.js";
+import { incidentLabels } from "./incident-labels.js";
 
 const GROUP_SHORT = { critical: "критические", coordinators: "на координаторах", high: "высокий", research: "исследование" };
 const COUNTER_LABEL = {
@@ -115,45 +116,6 @@ export function renderAlertLine(alerts, handlers) {
   el.querySelectorAll(".al-chip").forEach((c) => {
     c.querySelector(".al-name").onclick = () => handlers.open(c.dataset.id);
     c.querySelector(".al-take").onclick = () => handlers.claim(c.dataset.id);
-  });
-}
-
-// ---------- очередь «Что делать сейчас» (вкладка АРМ) ----------
-export function renderQueue(snap, el, handlers, predicate) {
-  const acts = (snap.actions || []).filter((a) => !predicate || predicate(snap.incidents[a.incident_id]));
-  if (!acts.length) {
-    el.innerHTML = `<div class="actions-empty">${predicate ? "По фильтру срочных действий нет" : "Срочных действий нет — всё под контролем"}</div>`;
-    return;
-  }
-  el.innerHTML = acts.map((a) => {
-    const inc = snap.incidents[a.incident_id] || {};
-    const crit = inc.priority_level === "critical" ? "crit" : "";
-    const conf = a.confidence != null ? ` · уверенность ${Math.round(a.confidence * 100)}%` : "";
-    const claim = ownerOf(inc, snap);
-    const main = a.kind === "route"
-      ? `<button class="btn small btn-primary" data-act="transfer">${a.target_team ? "Передать" : "Выбрать команду"}</button>`
-      : `<button class="btn small btn-primary" data-act="escalate">Эскалировать</button>`;
-    return `<div class="action ${a.kind} ${crit}" data-id="${esc(a.id)}" data-inc="${esc(a.incident_id)}">
-      <div class="action-head"><span>${a.kind === "route" ? "ПЕРЕДАТЬ" : "ЭСКАЛИРОВАТЬ"} · ${esc(inc.product || "")}</span>
-        <span class="countdown-mini" data-deadline="${esc(inc.deadline || "")}"></span></div>
-      <div class="action-title">${esc(a.title)}</div>
-      <div class="action-reason">${a.kind === "route" ? aiTag(inc.ai) : ""}${esc(a.reason)}${conf}${claim ? ` · <b class="owner">👤 ${esc(firstName(claim.by))}</b>` : ""}</div>
-      <div class="action-btns">
-        ${main}
-        <button class="btn small" data-act="copy" title="Скопировать текст ${a.kind === "route" ? "передачи" : "эскалации"}">Текст</button>
-        <a class="btn small" href="${esc(inc.itsm_url || "#")}" target="_blank" rel="noopener">ITSM</a>
-        <button class="btn small" data-act="open">Подробнее</button>
-      </div>
-    </div>`;
-  }).join("");
-  el.querySelectorAll(".action").forEach((card) => {
-    const act = acts.find((x) => x.id === card.dataset.id);
-    card.querySelector("[data-act=copy]").onclick = (e) => handlers.copy(act.draft, e.target);
-    card.querySelector("[data-act=open]").onclick = () => handlers.open(card.dataset.inc);
-    const t = card.querySelector("[data-act=transfer]");
-    if (t) t.onclick = () => handlers.transfer(card.dataset.inc);
-    const e = card.querySelector("[data-act=escalate]");
-    if (e) e.onclick = () => handlers.escalate(card.dataset.inc, act.draft);
   });
 }
 
@@ -288,7 +250,7 @@ export function renderBoard(snap, nowMs, ui) {
       const recurrence = ui.wall ? null : inc.recurrence;
       const sig = [inc.hash, inc.groups.join(), inc.resolved_in.join(), JSON.stringify(inc.ai), inc.forecast && inc.forecast.level,
         claim ? claim.by : "", inc.work_log.length, changed ? changed.until : 0, action ? action.id : "", compact, hideDuplicate,
-        recurrence?.count, recurrence?.level].join("|");
+        recurrence?.count, recurrence?.level, ui.wall ? "" : inc.labels?.join(",")].join("|");
       let entry = cardCache.get(key);
       if (!entry || entry.sig !== sig) {
         const el = entry ? entry.el : document.createElement("article");
@@ -421,10 +383,12 @@ const ownerName = (inc) => (inc.coordinator && inc.coordinator.name ? firstName(
 
 // Решённый в этой группе (висит 30 мин) — сжатая зелёная строка «решён в 14:05»
 function fillResolvedLine(el, inc, nowMs, wall) {
-  el.className = "card is-resolved one-line";
+  const labels = wall ? "" : incidentLabels(inc, 2);
+  el.className = `card is-resolved one-line${labels ? " has-labels" : ""}`;
   el.innerHTML = `<span class="ok">✓</span><b class="card-product">${esc(inc.product || "—")}</b>
     <span class="line-title">${esc(cardTitle(inc).text)}</span>
-    <span class="line-when">решён${inc.resolved_at ? " в " + esc(fmtWhen(inc.resolved_at, nowMs)) : ""}${!wall && ownerName(inc) ? " · " + esc(ownerName(inc)) : ""}</span>`;
+    <span class="line-when">решён${inc.resolved_at ? " в " + esc(fmtWhen(inc.resolved_at, nowMs)) : ""}${!wall && ownerName(inc) ? " · " + esc(ownerName(inc)) : ""}</span>
+    ${labels ? `<div class="card-foot">${labels}</div>` : ""}`;
 }
 
 function stateNote(inc, nowMs) {
@@ -452,11 +416,8 @@ function fillCardArm(el, inc, group, nowMs, changed, claim, action, act) {
   if (group === "coordinators" && active) buttons.push(`<button class="btn small btn-primary" data-act="transfer">Передать</button>`);
   if (action && action.kind === "escalate" && active) buttons.push(`<button class="btn small" data-act="escalate">Эскалировать</button>`);
   const esc_ = lastEscalation(inc);
-  const recurrence = active && inc.recurrence;
-  const strong = recurrence?.level === "strong";
   const tags = [
-    recurrence ? `<span class="recurrence-badge${strong ? " strong" : ""}"${strong ? ' title="Сбой повторился после постоянного решения"' : ""}>
-      ${strong ? "Сильный повтор" : "Повтор"} · ${esc(recurrence.count + 1)}-й за неделю</span>` : "",
+    incidentLabels(inc, 2),
     esc_ ? `<span class="escalated" title="эскалирован">⇪ эскалирован ${esc(fmtTime(esc_.at))}</span>` : "",
     also.length ? `<span class="also" title="также в группах">также: ${also.join(", ")}</span>` : "",
   ].filter(Boolean).join("");

@@ -133,6 +133,18 @@ button { font-family: inherit; }
 .action-reason { color: var(--muted); font-size: 12px; line-height: 1.3; flex: 1; }
 .action-btns { display: flex; gap: 6px; margin-top: 4px; }
 .actions-empty { color: var(--dim); align-self: center; }
+.personal-queue { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.personal-queue .queue { flex: 1; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
+.queue-feedback { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 8px 18px 0; color: var(--muted); }
+.queue-feedback[hidden], .queue-feedback [hidden] { display: none; }
+.personal-queue .action { min-width: 0; overflow-wrap: anywhere; }
+.personal-queue .action-btns { flex-wrap: wrap; min-width: 0; margin-inline: 0; padding: 0; border: 0; }
+.personal-queue .action-btns:disabled .btn { opacity: .55; cursor: default; }
+.personal-queue .action-head .countdown-mini { white-space: nowrap; }
+.queue-incident, .queue-composition { color: var(--muted); font-size: 12px; }
+.queue-composition summary { cursor: pointer; }
+.queue-action-form { overflow-wrap: anywhere; }
+.queue-action-form select { width: 100%; }
 
 /* ---------- доска ---------- */
 .board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 12px 18px; min-height: 0; flex: 1; }
@@ -410,8 +422,11 @@ body.wall.no-cursor, body.wall.no-cursor * { cursor: none !important; }
 .card-foot { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 5px; font-size: 11px; color: var(--muted); }
 .card-foot .also { margin: 0; font-size: 11px; }
 .tag-dup { font-size: 10px; font-weight: 700; color: var(--blue); background: var(--blue-bg); padding: 1px 6px; border-radius: 5px; white-space: nowrap; }
-.recurrence-badge { align-self: center; padding: 1px 6px; border-radius: 5px; color: var(--blue); background: var(--blue-bg); font-weight: 700; }
+.incident-label { align-self: center; padding: 1px 6px; border-radius: 5px; color: var(--blue); background: var(--blue-bg); font-size: 11px; font-weight: 700; }
+.incident-label.waiting_external, .incident-label.aftermath { color: var(--amber); background: var(--amber-bg); }
 .recurrence-badge.strong { color: #ff9bad; background: var(--red-bg); }
+.arm .card.one-line.has-labels { flex-wrap: wrap; }
+.arm .card.one-line.has-labels .card-foot { flex-basis: 100%; margin: 0; }
 .arm .changed { font-size: 11px; }
 
 /* панель выбранного инцидента */
@@ -421,6 +436,7 @@ body.wall.no-cursor, body.wall.no-cursor * { cursor: none !important; }
 .panel h2 { font: 700 18px var(--font-wide); margin: 8px 0 2px; }
 .panel-title { font-size: 14px; line-height: 1.35; }
 .panel-sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.panel-labels { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .panel h3 { font: 700 11px var(--font-wide); color: var(--muted); margin: 16px 0 6px; text-transform: uppercase; letter-spacing: .5px; display: flex; align-items: center; gap: 6px; }
 .panel h3 .ai-tag { font: 700 10px var(--font-wide); color: #fff; background: var(--purple); padding: 1px 5px; border-radius: 4px; }
 .panel h3 .ai-src { text-transform: none; letter-spacing: 0; color: var(--dim); font: 400 11px var(--font); }

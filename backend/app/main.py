@@ -17,6 +17,7 @@ from .config import ROOT, Settings, load_rules
 from .desk import DeskState
 from .history import History
 from .itsm import Itsm, ItsmError
+from .queue_preferences import Operation, QueuePreferences
 from .store import Store
 
 log = logging.getLogger("dashboard")
@@ -24,7 +25,8 @@ settings = Settings()
 ai_layer.setup()
 rules = load_rules(settings.rules_file)
 store = Store(settings, rules, desk=DeskState(ROOT / "cache" / "desk_state.json"),
-              history=History(ROOT / "cache" / "history.jsonl"))
+              history=History(ROOT / "cache" / "history.jsonl"),
+              queue_preferences=QueuePreferences(ROOT / "cache" / "queue_preferences.json"))
 itsm = Itsm(settings.incidents_file, rules, store.clock.now, store=store,
             backup_dir=settings.backups_dir, backups_keep=settings.backups_keep)
 BOOT_ID = uuid.uuid4().hex[:8]  # ETag меняется после перезапуска, даже если version совпал
@@ -95,6 +97,30 @@ def search(q: str = "", status: str = "all", product: str | None = None, team: s
 @app.get("/api/events")
 def events(after: int = 0):
     return {"events": store.events_after(after), "last_event_seq": store.seq}
+
+
+class QueuePreferenceBody(BaseModel):
+    by: str
+    id: str
+    operation: Operation
+
+
+@app.get("/api/queue")
+def queue(response: Response, by: str = ""):
+    response.headers["Cache-Control"] = "no-store"
+    return {"items": store.queue(by)}
+
+
+@app.post("/api/queue/preferences")
+def queue_preference(body: QueuePreferenceBody):
+    if not body.by.strip() or not body.id.strip():
+        raise HTTPException(400, "укажите координатора и задачу")
+    try:
+        store.queue_preferences.set(body.by, body.id.strip(), body.operation)
+    except OSError:
+        log.exception("queue preference write failed")
+        raise HTTPException(503, "не удалось сохранить предпочтение очереди")
+    return {"ok": True}
 
 
 @app.get("/api/incidents/{inc_id}")
@@ -195,7 +221,7 @@ def itsm_comment(inc_id: str, b: CommentBody):
 
 @app.post("/api/itsm/{inc_id}/escalate")
 def itsm_escalate(inc_id: str, b: EscalateBody):
-    return _run(inc_id, lambda: itsm.escalate(inc_id, b.by, b.comment))
+    return _run(inc_id, lambda: itsm.escalate(inc_id, b.by, b.comment, b.expected_hash))
 
 
 class DuplicatesBody(BaseModel):

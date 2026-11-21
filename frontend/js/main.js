@@ -8,6 +8,7 @@ import { openTransfer, openEscalate, closeModal } from "./desk.js";
 import * as S from "./search.js";
 import { renderPanel } from "./panel.js";
 import { mountOutages } from "./outages.js";
+import { mountQueue } from "./queue.js";
 
 const HIGHLIGHT_MS = 15000;
 const VIEW_KEY = "mi-dashboard:view";
@@ -38,10 +39,15 @@ const ui = {
 const nowMs = () => Date.now() + state.offsetMs;
 const filtersEl = document.getElementById("filters");
 const outagesEl = document.getElementById("outages");
+const queueEl = document.getElementById("queue");
 const renderOutages = mountOutages(outagesEl, { open: openDrawer, refresh: () => refreshSnapshot(), needName, toast: R.toast });
+const queue = mountQueue(queueEl, {
+  getSnapshot: () => state.snap, open: (id, isCurrent) => openDrawer(id, undefined, isCurrent), copy, needName, toast: R.toast,
+  refreshSnapshot: () => refreshSnapshot(), tickCountdowns: () => R.tickCountdowns(nowMs()),
+});
 
 function loadView() {
-  try { const v = localStorage.getItem(VIEW_KEY); return VIEWS.includes(v) ? v : "board"; } catch { return "board"; }
+  try { const v = localStorage.getItem(VIEW_KEY); return VIEWS.includes(v) ? v : "queue"; } catch { return "queue"; }
 }
 
 // ---------- данные ----------
@@ -62,6 +68,7 @@ const refreshSnapshot = startPolling(
     }
     if (fresh.some((e) => !e.alert && CHANGE_TYPES.has(e.type))) Sound.playTick();
     renderAll();
+    queue.refresh();
     onServerChange();
   },
   (online) => {
@@ -70,6 +77,7 @@ const refreshSnapshot = startPolling(
     R.renderStatus(state);
   },
 );
+window.addEventListener("storage", () => { if (state.snap) queue.syncBy(); });
 
 F.mountFilters(filtersEl, {
   change: () => { ui.limits = {}; state.serverTotal = null; renderMain(); updateServerTotal(); if (state.listMode === "all") openList("all"); },
@@ -172,23 +180,19 @@ function renderMain() {
   F.renderFilters(filtersEl, snap, shownUniq, total, state.serverTotal);
   S.paint(now, state.openId);
 
-  const queueEl = document.getElementById("queue");
   const mineEl = document.getElementById("mine");
   const feedEl = document.getElementById("feedview");
   renderOutages(snap);
-  if (state.view === "queue") R.renderQueue(snap, queueEl, { copy, open: openDrawer, transfer: doTransfer, escalate: doEscalate }, ui.predicate);
   if (state.view === "feed") { state.feedSeenSeq = snap.last_event_seq; R.renderFeedList(snap, feedEl, openDrawer); }
   const mineN = state.view === "mine" ? R.renderMine(snap, mineEl, getMe(), now, ui)
     : Object.values(snap.incidents).filter((i) => getMe() && i.coordinator && i.coordinator.name === getMe() && i.state_kind === "active").length;
-  const qn = (snap.actions || []).length;
-  document.getElementById("queue-count").textContent = qn ? String(qn) : "";
   document.getElementById("mine-count").textContent = mineN ? String(mineN) : "";
   document.getElementById("board").classList.toggle("hidden", state.view !== "board");
   queueEl.classList.toggle("hidden", state.view !== "queue");
   outagesEl.classList.toggle("hidden", state.view !== "outages");
   mineEl.classList.toggle("hidden", state.view !== "mine");
   feedEl.classList.toggle("hidden", state.view !== "feed");
-  filtersEl.classList.toggle("hidden", state.view !== "board" && state.view !== "queue");
+  filtersEl.classList.toggle("hidden", state.view !== "board");
   document.querySelectorAll(".tab[data-view]").forEach((t) => t.classList.toggle("active", t.dataset.view === state.view));
 
   const unseen = Math.max(0, snap.last_event_seq - (state.feedSeenSeq ?? snap.last_event_seq));
@@ -318,11 +322,11 @@ const drawerHandlers = {
 
 // inc — инцидент из списка поиска. Ссылки по одному номеру могут вести за пределы снимка.
 let drawerRequest = 0;
-async function openDrawer(id, inc) {
+async function openDrawer(id, inc, isCurrent) {
   const request = ++drawerRequest;
   if (id && !inc && !getInc(id)) {
     await fetchExtra(id);
-    if (request !== drawerRequest) return;
+    if (request !== drawerRequest || (isCurrent && !isCurrent())) return;
     if (!getInc(id)) { R.toast(`Не удалось открыть ${id}`, "bad"); return; }
   } else if (id && state.snap && !state.snap.incidents[id]) {
     if (inc) state.extra.set(id, inc);
@@ -334,12 +338,14 @@ async function openDrawer(id, inc) {
   document.querySelectorAll("#board .card").forEach((c) => c.classList.toggle("selected", c.dataset.id === state.openId));
   if (state.view === "board" && state.snap) R.renderBoard(state.snap, nowMs(), ui);
   S.paint(nowMs(), state.openId);
+  return !!state.openId;
 }
 
 function setView(v) {
   state.view = v;
   try { localStorage.setItem(VIEW_KEY, v); } catch { /* приватный режим */ }
   renderMain();
+  if (v === "queue" && state.snap) queue.refresh();
 }
 
 function jumpTo(key) {
@@ -389,6 +395,7 @@ function start(withSound) {
   const name = meInput.value.trim();
   if (!name) { meInput.focus(); meInput.classList.add("invalid"); return; }
   setMe(name);
+  if (state.snap) queue.syncBy();
   document.getElementById("start-overlay").classList.add("hidden");
   Sound.unlock();
   if (withSound) {

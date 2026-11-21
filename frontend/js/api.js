@@ -47,11 +47,12 @@ export function startPolling(onSnap, onStatus, intervalMs = 1000) {
   return () => tick(true);
 }
 
-async function send(method, url, body) {
+async function send(method, url, body, options) {
   const r = await fetch(url, {
     method,
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
+    ...options,
   });
   let data = null;
   try { data = await r.json(); } catch { /* пустой ответ */ }
@@ -65,6 +66,8 @@ async function send(method, url, body) {
 }
 
 export const api = {
+  queue: (by, signal) => send("GET", `/api/queue${by ? `?by=${encodeURIComponent(by)}` : ""}`, undefined, { signal, cache: "no-store" }),
+  queuePreference: (by, id, operation) => send("POST", "/api/queue/preferences", { by, id, operation }),
   // «Взять в работу» снимает тревогу у всех (кнопки «Принял» нет). Уже у другого → 409 с data.coordinator.
   // expected_hash не шлём: «взять» не меняет полей инцидента, конфликт тут только мешал бы.
   claim: (id, force) => send("POST", `/api/incidents/${encodeURIComponent(id)}/claim`, { by: getMe(), force: force || undefined }),

@@ -67,6 +67,18 @@ def escalation_text(inc: dict, why: str, now: datetime) -> str:
     return "\n".join(lines)
 
 
+def forecast_warning(forecast: dict | None) -> str | None:
+    if not forecast:
+        return None
+    if forecast["level"] == "overdue":
+        return "срок решения нарушен"
+    if forecast["level"] == "breach":
+        return f"прогноз: не успеют (типично ~{forecast['median_minutes']} мин)"
+    if forecast["level"] == "risk":
+        return f"прошло {int(forecast['progress'] * 100)}% срока"
+    return None
+
+
 def build_actions(incidents: dict[str, dict], now: datetime) -> list[dict]:
     actions: list[dict] = []
     for inc in incidents.values():
@@ -97,15 +109,8 @@ def build_actions(incidents: dict[str, dict], now: datetime) -> list[dict]:
             })
 
         # 2. Эскалировать горящий срок
-        fc = inc.get("forecast")
-        if inc["state_kind"] == "active" and inc["priority_level"] in ("critical", "high") and fc:
-            why = None
-            if fc["level"] == "overdue":
-                why = "срок решения нарушен"
-            elif fc["level"] == "breach":
-                why = f"прогноз: не успеют (типично ~{fc['median_minutes']} мин)"
-            elif fc["level"] == "risk":
-                why = f"прошло {int(fc['progress'] * 100)}% срока"
+        if inc["state_kind"] == "active" and inc["priority_level"] in ("critical", "high"):
+            why = forecast_warning(inc.get("forecast"))
             if why:
                 actions.append({
                     "id": f"escalate:{inc['id']}",
