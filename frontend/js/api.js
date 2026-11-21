@@ -85,4 +85,5 @@ export const api = {
   outageAction: (id, fields) => send("POST", `/api/outages/${encodeURIComponent(id)}/actions`, { ...fields, by: getMe() }),
   meta: () => send("GET", "/api/meta"),
   incident: (id) => send("GET", `/api/incidents/${encodeURIComponent(id)}`),
+  aiFeedback: (id, fields) => send("POST", `/api/incidents/${encodeURIComponent(id)}/ai-feedback`, fields),
 };

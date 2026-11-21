@@ -19,6 +19,7 @@ from ..adapter import iso
 from ..config import ROOT, Rules
 from . import dynamics as dyn_mod
 from . import duplicates as dup_mod
+from . import feedback as feedback_mod
 from . import index as index_mod
 from . import outages as outage_mod
 from . import rules as rule_ai
@@ -36,15 +37,17 @@ ADVANCED_PARTS = ("route", "risk")
 
 _worker: LLMWorker | None = None
 _history = dyn_mod.History(None)
+_feedback = feedback_mod.FeedbackStore(None)
 _status = {"provider": "rules", "state": "off", "label": "ИИ: правила (GigaChat выключен)", "error": None}
 _dup_groups: list[dict] = []
 _outage_candidates: list[dict] = []
 
 
-def setup() -> None:
+def setup(*, feedback_path: Path | None = None) -> None:
     """История изменений — на диск всегда; GigaChat — если LLM_PROVIDER=gigachat и есть ключ."""
-    global _worker, _status, _history
+    global _worker, _status, _history, _feedback
     _history = dyn_mod.History(ROOT / "cache" / "ai_history.json")
+    _feedback = feedback_mod.FeedbackStore(feedback_path or ROOT / "cache" / "ai_feedback.json")
     if os.getenv("LLM_PROVIDER", "rules").lower() != "gigachat":
         return
     from .gigachat import GigaChatClient, GigaChatError
@@ -71,11 +74,13 @@ def setup() -> None:
                         advanced_model=os.getenv("GIGACHAT_MODEL_ADVANCED", "").strip() or None)
 
 
-def reset(worker: LLMWorker | None = None, history: dyn_mod.History | None = None) -> None:
-    """Для тестов: чистое состояние без диска."""
-    global _worker, _history, _dup_groups, _outage_candidates
+def reset(worker: LLMWorker | None = None, history: dyn_mod.History | None = None, *,
+          feedback_path: Path | None = None) -> None:
+    """Для тестов: чистое состояние, с памятью на диске только по явному пути."""
+    global _worker, _history, _feedback, _dup_groups, _outage_candidates
     _worker = worker
     _history = history or dyn_mod.History(None)
+    _feedback = feedback_mod.FeedbackStore(feedback_path)
     _dup_groups = []
     _outage_candidates = []
 
@@ -85,7 +90,17 @@ def status() -> dict:
 
 
 def consume_dirty() -> bool:
-    return _worker.consume_dirty() if _worker else False
+    feedback_dirty = _feedback.consume_dirty()
+    llm_dirty = _worker.consume_dirty() if _worker else False
+    return feedback_dirty or llm_dirty
+
+
+def record_feedback(inc: dict, by: str, kind: str, corrected_team: str | None = None) -> bool:
+    """Записывает исправление для показанной подсказки; проверка команды — на стороне вызывающего API.
+
+    True — сохранено, False — повтор. ValueError — некорректный ввод, OSError — ошибка хранения.
+    """
+    return _feedback.record(inc, by, kind, corrected_team)
 
 
 def duplicate_groups() -> list[dict]:
@@ -130,6 +145,7 @@ def enrich(incidents: dict[str, dict], now: datetime, rules: Rules, refs=None) -
     groups = dup_mod.find_groups(incidents, idx)
     outages = outage_mod.find_candidates(incidents, idx)
     dup_of = {i: g for g in groups if not g.get("hidden") for i in g["ids"]}
+    feedback_index = _feedback.route_index()
 
     watched: list[tuple[dict, list[str], dict | None]] = []   # кандидаты в GigaChat
     for inc in incidents.values():
@@ -138,7 +154,9 @@ def enrich(incidents: dict[str, dict], now: datetime, rules: Rules, refs=None) -
         g = dup_of.get(inc["id"])
         live = [x for x in inc.get("groups", ()) if x not in inc.get("resolved_in", ())]
         risk = rule_ai.risk(inc, idx, now, dyn, g["size"] if g else 0)
-        route = rule_ai.route(inc, idx, incidents) if inc.get("is_coordinators") and inc["state_kind"] in ("active", "research") else None
+        route = None
+        if inc.get("is_coordinators") and inc["state_kind"] in ("active", "research"):
+            route = rule_ai.route(inc, idx, incidents, feedback_mod.route_evidence(inc, feedback_index))
         ai = {"source": "rules", "summary": rule_ai.summary(inc), "summary_meta": None, "route": route, "risk": risk,
               "dynamics": None, "duplicates": None, "pending": False}
         if dyn:
@@ -173,6 +191,7 @@ def enrich(incidents: dict[str, dict], now: datetime, rules: Rules, refs=None) -
         if r:
             r.pop("_cands", None)
             r.pop("_total", None)
+            r.pop("_feedback", None)
 
 
 def _dup_card(g: dict, inc_id: str, at: str) -> dict:
@@ -224,17 +243,21 @@ def _overlay_llm(incidents: dict[str, dict], watched: list, groups: list[dict], 
         route = ai["route"]
         if route:
             cands, total = route["_cands"], route["_total"]
+            feedback = route.get("_feedback")
             # GigaChat выбирает только из весомых: команда с «6 из 378» — шум, а не кандидат
             viable = [c for c in cands if c["count"] >= max(2, ROUTE_VIABLE_SHARE * cands[0]["count"])] or cands[:1]
+            if feedback and feedback.preferred_team:
+                viable = [c for c in cands if c["team"] == feedback.preferred_team]
+            examples = {"total": feedback.total, "by_team": feedback.counts, "examples": feedback.examples} if feedback else None
 
-            def set_route(v, source, when, route=route, cands=cands, total=total):
-                new = rule_ai.route_from(v["team"], cands, total, route["basis"], incidents)
-                new["reason"] = v.get("reason") or new["reason"]
+            def set_route(v, source, when):
+                new = rule_ai.route_from(v["team"], cands, total, route["basis"], incidents, feedback, v.get("reason"))
                 new["rules_team"] = route["team"]
                 new.update(_meta(source, when))
                 ai["route"] = new
 
-            take("route", route_key(fields, viable), set_route, {"cands": viable, "total": total})
+            take("route", route_key(fields, viable, examples), set_route,
+                 {"cands": viable, "total": total, "feedback": examples})
 
         risk = ai["risk"]
         if risk and inc["id"] in risk_top_ids:

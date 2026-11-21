@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from . import ai as ai_layer
 from .config import ROOT, Settings, load_rules
 from .desk import DeskState
+from .feedback_api import feedback_router
 from .history import History
 from .itsm import Itsm, ItsmError
 from .outage_api import outage_action_router
@@ -53,6 +54,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="МТС · дашборд координатора", lifespan=lifespan)
 app.include_router(outage_action_router(lambda: itsm))
+app.include_router(feedback_router(lambda inc_id: store.incident(inc_id), lambda: store._teams(), rules.coordinators_team))
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 

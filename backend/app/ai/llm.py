@@ -73,8 +73,11 @@ def summary_key(fields: dict) -> str:
     return _h("summary", text_key(fields))
 
 
-def route_key(fields: dict, cands: list[dict]) -> str:
-    return _h("route", text_key(fields), [c["team"] for c in cands])
+def route_key(fields: dict, cands: list[dict], feedback: dict | None = None) -> str:
+    teams = [c["team"] for c in cands]
+    if feedback:
+        return _h("route_feedback", text_key(fields), teams, feedback)
+    return _h("route", text_key(fields), teams)
 
 
 def model_key(key: str, model: str | None) -> str:
@@ -120,9 +123,13 @@ def build_incident_prompt(fields: dict, parts: dict) -> str:
                       f'(продукт/сервис и кого затронуло)"')
     if "route" in parts:
         r = parts["route"]
-        lines.append("Сейчас инцидент у координаторов, его надо передать команде. Кандидаты по истории похожих инцидентов:")
+        lines.append("Сейчас инцидент у координаторов, его надо передать команде. Кандидаты и история похожих инцидентов:")
         for c in r["cands"]:
             lines.append(f"- {c['team']}: вела {c['count']} из {r['total']} похожих, решила {c['solved']}")
+        if feedback := r.get("feedback"):
+            lines.append("Отдельно от истории передач — исправления координаторов для похожих заявок:")
+            lines.append(json.dumps(feedback, ensure_ascii=False))
+            lines.append("Исправления отражают выбор координаторов, а не подтверждённые решения.")
         lines.append("Выбери команду ТОЛЬКО из этого списка.")
         answer.append('"route_team": "точное название команды из списка"')
         answer.append('"route_reason": "1–2 предложения: почему по сути проблемы (какой сервис или компонент она '

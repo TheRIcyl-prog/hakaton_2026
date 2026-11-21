@@ -4,6 +4,7 @@
 import { esc, fmtDateTime, fmtTime, fmtWhen, plural } from "./format.js";
 import { ownerOf } from "./render.js";
 import { incidentLabels } from "./incident-labels.js";
+import { bindFeedback, feedbackMarkup, rememberFeedback } from "./ai-feedback.js";
 
 const GROUP_SHORT = { critical: "критические", coordinators: "на координаторах", high: "высокий", research: "исследование" };
 const FORECAST_TEXT = { ok: "успевают", risk: "срок на исходе", breach: "прогноз: не успеют", overdue: "срок нарушен" };
@@ -48,6 +49,7 @@ function aiSection(inc, snap) {
         ${r.similar && r.similar.length ? `<div>Похожие: ${r.similar.slice(0, 6).map((x) => `${open(x.id)} <small>${esc(x.team || "")}, ${esc(x.state || "")}</small>`).join(" · ")}</div>`
           : r.similar_ids && r.similar_ids.length ? `<div>Похожие: ${r.similar_ids.slice(0, 6).map(open).join(", ")}</div>` : ""}
         ${r.rules_team && r.rules_team !== r.team ? `<div>По правилам первой была «${esc(r.rules_team)}» — GigaChat выбрал другую.</div>` : ""}
+        ${r.feedback?.count ? `<div>Учтены исправления координаторов: ${esc(r.feedback.count)}.</div>` : ""}
         ${src(r)}</div>` : ""}</div>`);
   }
   const k = ai.risk;
@@ -80,7 +82,7 @@ function aiSection(inc, snap) {
   }
   const st = snap && snap.ai_status;
   return `<h3>${aiTag} Подсказки ${st && st.label ? `<small class="ai-src">${esc(st.label)}</small>` : ""}${ai.pending ? `<small class="ai-src">· GigaChat думает…</small>` : ""}</h3>
-    ${boxes.join("") || `<div class="pop-empty">Подсказок нет</div>`}`;
+    ${boxes.join("") || `<div class="pop-empty">Подсказок нет</div>`}${feedbackMarkup(inc, snap)}`;
 }
 
 function historyHtml(list, nowMs) {
@@ -112,10 +114,11 @@ function recurrenceSection(recurrence, nowMs) {
 // handlers: {close, copy, open, claim, release, transfer, escalate, comment, confirmDups, me}
 export function renderPanel(inc, snap, nowMs, handlers, history) {
   const el = document.getElementById("drawer");
-  if (!inc) { el.classList.add("hidden"); el.innerHTML = ""; el.dataset.id = ""; return; }
+  if (!inc) { rememberFeedback(el, false); el.classList.add("hidden"); el.innerHTML = ""; el.dataset.id = ""; return; }
   el.classList.remove("hidden");
   // при обновлении снимка не теряем набранный комментарий и прокрутку
   const same = el.dataset.id === inc.id;
+  rememberFeedback(el, same);
   const prevInput = el.querySelector(".comment-form input");
   const keep = same && prevInput ? { v: prevInput.value, f: document.activeElement === prevInput } : null;
   const scroll = same ? el.scrollTop : 0;
@@ -218,5 +221,6 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
     if (t) { handlers.comment(inc.id, t); form.text.value = ""; }
   };
   if (keep) { form.text.value = keep.v; if (keep.f) form.text.focus(); }
+  bindFeedback(el, inc);
   el.scrollTop = scroll;
 }

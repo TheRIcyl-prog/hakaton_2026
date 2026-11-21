@@ -11,6 +11,7 @@ import re
 from datetime import datetime
 
 from ..adapter import parse_dt
+from .feedback import RouteEvidence
 from .index import Index
 from .text import SUMMARY_MAX, clip, first_sentence
 
@@ -47,30 +48,41 @@ def similar_brief(ids: list[str], incidents: dict[str, dict]) -> list[dict]:
     return out
 
 
-def route(inc: dict, index: Index, incidents: dict[str, dict]) -> dict | None:
+def route(inc: dict, index: Index, incidents: dict[str, dict], feedback: RouteEvidence | None = None) -> dict | None:
     found = index.route_stats(inc)
-    if not found:
+    preferred = feedback.preferred_team if feedback else None
+    if not found and not preferred:
         return None
-    _, basis, stats = found
+    _, basis, stats = found or (None, "по продукту, сервису и сценарию", {})
     total = sum(s.count for s in stats.values())
-    ranked = sorted(stats.items(), key=lambda kv: (-kv[1].count, -kv[1].solved, kv[0]))[:CANDIDATES]
-    cands = [{"team": t, "count": s.count, "solved": s.solved, "score": round(s.count / total, 2),
-              "similar_ids": s.examples} for t, s in ranked]
-    return route_from(cands[0]["team"], cands, total, basis, incidents)
+    teams = sorted(stats, key=lambda team: (-stats[team].count, -stats[team].solved, team))[:CANDIDATES]
+    if preferred and preferred not in teams:
+        teams = [*teams[:CANDIDATES - 1], preferred]
+    cands = []
+    for team in teams:
+        s = stats.get(team)
+        cands.append({"team": team, "count": s.count if s else 0, "solved": s.solved if s else 0,
+                      "score": round(s.count / total, 2) if s else 0.0, "similar_ids": s.examples if s else []})
+    return route_from(preferred or teams[0], cands, total, basis, incidents, feedback)
 
 
-def route_from(team: str, cands: list[dict], total: int, basis: str, incidents: dict[str, dict]) -> dict:
+def route_from(team: str, cands: list[dict], total: int, basis: str, incidents: dict[str, dict],
+               feedback: RouteEvidence | None = None, model_reason: str | None = None) -> dict:
     """Маршрут на выбранную команду; уверенность — всегда по истории этой команды."""
     best = next(c for c in cands if c["team"] == team)
     others = [c for c in cands if c["team"] != team]
     n, k = best["count"], best["solved"]
-    return {
+    history = f"{n} из {total} похожих" if total else "Нет похожих в истории"
+    reason = (f"{history} {basis} вела эта команда" + (f", решила {k}" if k else "")) if total else history
+    # При наличии исправлений оставляем знаменатели в пояснении даже после ответа модели.
+    if model_reason:
+        reason = f"{model_reason.rstrip('. ')}. {reason}" if feedback else model_reason
+    result = {
         "team": team,
         "confidence": best["score"],
-        "confidence_text": f"{n} из {total} похожих",
+        "confidence_text": history,
         "basis": basis,
-        "reason": f"{n} из {total} похожих {basis} вела эта команда"
-                  + (f", решила {k}" if k else ""),
+        "reason": reason,
         "alternatives": [{"team": c["team"], "score": c["score"], "confidence_text": f"{c['count']} из {total} похожих"}
                          for c in others[:BACKUPS]],
         "candidates": [{k2: v for k2, v in c.items() if k2 != "similar_ids"} for c in cands],
@@ -79,6 +91,12 @@ def route_from(team: str, cands: list[dict], total: int, basis: str, incidents: 
         "_cands": cands,          # служебное: для GigaChat, из снимка убирается
         "_total": total,
     }
+    if feedback:
+        count = feedback.counts.get(team, 0)
+        result["_feedback"] = feedback
+        result["feedback"] = {"count": count, "total": feedback.total, "by_team": feedback.counts}
+        result["reason"] += f". В похожих заявках эту команду выбрали в {count} из {feedback.total} исправлений."
+    return result
 
 
 def risk(inc: dict, index: Index, now: datetime, dynamics: dict | None, dup_size: int = 0) -> dict | None:
