@@ -195,7 +195,7 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
       <dt>Сценарий</dt><dd>${esc(inc.scenario || "—")}</dd>
       <dt>Тип сервиса</dt><dd>${esc(inc.service_type || "—")}</dd>
       <dt>Канал</dt><dd>${esc(inc.channel || "—")}</dd>
-      <dt>Связи</dt><dd>${links.join(", ") || "—"}</dd>
+      <dt>Связи</dt><dd>${inc.cause_incident_id ? `Причина: ${open(inc.cause_incident_id)}${links.length ? ` · ${links.join(", ")}` : ""}` : links.join(", ") || "—"}</dd>
     </dl>`;
 
   const on = (sel, fn) => el.querySelectorAll(sel).forEach((b) => (b.onclick = fn));

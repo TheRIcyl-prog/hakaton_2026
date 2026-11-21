@@ -50,11 +50,15 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
 
   function members(outage, detail) {
     const ids = detail?.outage?.incident_ids || outage.incident_ids;
-    return `<ul class="outage-members">${ids.map((id) => {
-      const inc = snap.incidents[id] || detail?.incidents.get(id);
+    const rows = ids.map((id) => ({ id, inc: snap.incidents[id] || detail?.incidents.get(id) }));
+    const included = new Set(ids);
+    const parents = new Set(rows.map(({ inc }) => inc?.cause_incident_id).filter((id) => included.has(id)));
+    return `<ul class="outage-members">${rows.map(({ id, inc }) => {
       const label = inc && [inc.product, inc.title].filter(Boolean).join(" · ");
+      const cause = inc?.cause_incident_id;
+      const relation = included.has(cause) ? `Следствие ${cause}` : parents.has(id) ? "Причина цепочки" : "";
       return `<li><button type="button" class="outage-member" data-incident="${esc(id)}"><b>${esc(id)}</b>
-        ${label ? `<span>${esc(label)}</span>` : ""}</button></li>`;
+        ${label || relation ? `<span>${esc([relation, label].filter(Boolean).join(" · "))}</span>` : ""}</button></li>`;
     }).join("")}</ul>`;
   }
 

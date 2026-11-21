@@ -248,6 +248,9 @@ def adapt_one(raw: dict, rules: Rules, itsm_template: str) -> dict | None:
         "coordinator": _coordinator(raw.get("coordinator")),
         "hash": content_hash(raw),
     }
+    cause = raw.get("causeIncidentId")
+    if isinstance(cause, str) and (cause_id := cause.strip()):
+        incident["cause_incident_id"] = cause_id
     link = outage_link(raw.get("outage"))
     if link is not None:
         incident["outage"] = link

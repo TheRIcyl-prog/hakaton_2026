@@ -1,4 +1,4 @@
-"""Карточки сбоев из предложений ИИ и сохранённых связей инцидентов."""
+"""Карточки сбоев из явных связей, предложений ИИ и подтверждений."""
 from __future__ import annotations
 
 import hashlib
@@ -45,17 +45,56 @@ def _summary(link: dict, members: list[dict]) -> dict:
     }
 
 
+def _available(inc: dict) -> bool:
+    return inc["state_kind"] == "active" and not inc.get("outage")
+
+
+def _explicit_proposals(incidents: dict[str, dict]) -> Iterable[dict]:
+    parents = {inc_id: inc["cause_incident_id"] for inc_id, inc in incidents.items()
+               if inc.get("cause_incident_id") and _available(inc)}
+    roots: dict[str, str | None] = {}
+    for inc_id in parents:
+        cursor = inc_id
+        path = set()
+        while cursor in parents and cursor not in roots and cursor not in path:
+            path.add(cursor)
+            cursor = parents[cursor]
+        if cursor in roots:
+            root = roots[cursor]
+        elif cursor not in path and cursor in incidents and _available(incidents[cursor]):
+            root = cursor
+        else:
+            root = None
+        # Запоминаем в том числе тупики и циклы, чтобы повторно не обходить их ветки.
+        roots.update(dict.fromkeys(path, root))
+
+    effects = defaultdict(list)
+    for inc_id, root in roots.items():
+        if root is not None:
+            effects[root].append(inc_id)
+    for root in sorted(effects):
+        yield {"master_id": root, "ids": [root, *effects[root]], "source": "rules",
+               "name": f"Причина и следствия · {incidents[root]['title']}",
+               "reason": f"Явные ссылки causeIncidentId ведут к {root}. Связь требует подтверждения координатором."}
+
+
 def build_candidates(proposals: Iterable[dict], incidents: dict[str, dict]) -> dict[str, OutageCandidate]:
+    explicit = _build_candidates(_explicit_proposals(incidents), incidents, min_members=2, reserved=set())
+    reserved = {inc_id for candidate in explicit.values() for inc_id in candidate.hashes}
+    return {**explicit, **_build_candidates(proposals, incidents, min_members=3, reserved=reserved)}
+
+
+def _build_candidates(proposals: Iterable[dict], incidents: dict[str, dict], *, min_members: int,
+                      reserved: set[str]) -> dict[str, OutageCandidate]:
     candidates = {}
     for proposal in proposals:
         master_id, ids = proposal.get("master_id"), proposal.get("ids")
         if not isinstance(ids, list) or any(not isinstance(i, str) for i in ids) or master_id not in ids:
             continue
         member_ids = [master_id, *sorted(set(ids) - {master_id})]
-        if len(member_ids) < 3:
+        if len(member_ids) < min_members or not reserved.isdisjoint(member_ids):
             continue
-        if any(i not in incidents or incidents[i]["state_kind"] != "active" or incidents[i].get("outage")
-               for i in member_ids):
+        if any(i not in incidents or not _available(incidents[i]) for i in member_ids):
             continue
         members = [incidents[i] for i in member_ids]
         link = {key: proposal[key] for key in ("master_id", "name", "reason", "source")}
