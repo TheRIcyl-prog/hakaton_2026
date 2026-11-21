@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import timedelta
 
+from .exclusions import compatible_members, excluded_peers
 from .index import Index
 from .text import clip, minutes_text, plural, tokens
 
@@ -51,14 +52,15 @@ def find_groups(incidents: dict[str, dict], index: Index) -> list[dict]:
     w = WINDOW.total_seconds()
     members: list[list[str]] = []
     pair_sim: dict[str, float] = {}
+    exclusions = excluded_peers(incidents)
     for items in buckets.values():
         if len(items) < 2:
             continue
         items.sort()
         first = incidents[items[0][1]]
         common = tokens(" ".join(filter(None, [first.get("product"), first.get("service"), first.get("scenario")])))
-        # открытая группа: (время первого, заголовки, [(основы слов участника)], участники)
-        open_groups: list[tuple[float, set[str], list[frozenset[str]], list[str]]] = []
+        # Время первого, заголовки, основы слов, участники и несовместимые с ними заявки.
+        open_groups: list[tuple[float, set[str], list[frozenset[str]], list[str], set[str]]] = []
         for t, i in items:
             inc = incidents[i]
             tk = tokens(_text(inc)) - common
@@ -66,6 +68,8 @@ def find_groups(incidents: dict[str, dict], index: Index) -> list[dict]:
             open_groups = [g for g in open_groups if t - g[0] <= w]
             best, best_sim = None, 0.0
             for g in open_groups[-MAX_COMPARE:]:
+                if i in g[4]:
+                    continue
                 sim = 1.0 if title and title in g[1] else max((_similar(tk, x) for x in g[2][:20]), default=0.0)
                 if sim >= SIMILARITY and sim > best_sim:
                     best, best_sim = g, sim
@@ -73,9 +77,10 @@ def find_groups(incidents: dict[str, dict], index: Index) -> list[dict]:
                 best[1].add(title)
                 best[2].append(tk)
                 best[3].append(i)
+                best[4].update(exclusions.get(i, ()))
                 pair_sim[i] = best_sim
             else:
-                g = (t, {title}, [tk], [i])
+                g = (t, {title}, [tk], [i], set(exclusions.get(i, ())))
                 open_groups.append(g)
                 members.append(g[3])
 
@@ -99,7 +104,7 @@ def _bursts(buckets, incidents: dict[str, dict], index: Index, in_text: dict[str
             j = k
             while j < len(items) and items[j][0] - start <= w:
                 j += 1
-            ids = [i for _, i in items[k:j]]
+            ids = compatible_members([i for _, i in items[k:j]], incidents)
             k = j
             if len(ids) < BURST_MIN:
                 continue

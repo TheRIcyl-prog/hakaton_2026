@@ -542,8 +542,8 @@ class Store:
 
 def _public(inc: dict) -> dict:
     """Убрать служебные поля перед выдачей."""
-    if "_escalation" in inc:
-        inc = {key: value for key, value in inc.items() if key != "_escalation"}
+    if "_escalation" in inc or "_outage_excluded_with" in inc:
+        inc = {key: value for key, value in inc.items() if key not in ("_escalation", "_outage_excluded_with")}
     ai = inc.get("ai")
     route = ai.get("route") if isinstance(ai, dict) else None
     if isinstance(route, dict) and any(k.startswith("_") for k in route):

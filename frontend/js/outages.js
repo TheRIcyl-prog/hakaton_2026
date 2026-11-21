@@ -39,6 +39,7 @@ export function renderWallOutages(el, snap, alarmIds) {
 export function mountOutages(el, { open, refresh, needName, toast }) {
   const list = el.querySelector("#outage-list");
   const status = el.querySelector("#outage-status");
+  status.tabIndex = -1;
   const refreshButton = el.querySelector("#outage-refresh");
   const details = new Map();
   let snap;
@@ -57,8 +58,11 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
       const label = inc && [inc.product, inc.title].filter(Boolean).join(" · ");
       const cause = inc?.cause_incident_id;
       const relation = included.has(cause) ? `Следствие ${cause}` : parents.has(id) ? "Причина цепочки" : "";
-      return `<li><button type="button" class="outage-member" data-incident="${esc(id)}"><b>${esc(id)}</b>
-        ${label || relation ? `<span>${esc([relation, label].filter(Boolean).join(" · "))}</span>` : ""}</button></li>`;
+      const canExclude = detail?.incidents.has(id);
+      const disabled = busy || refreshRequired ? " disabled" : "";
+      return `<li${canExclude ? ' class="action-btns"' : ""}><button type="button" class="outage-member" data-incident="${esc(id)}"><b>${esc(id)}</b>
+        ${label || relation ? `<span>${esc([relation, label].filter(Boolean).join(" · "))}</span>` : ""}</button>
+        ${canExclude ? `<button type="button" class="btn small" data-exclude="${esc(id)}" aria-label="Исключить ${esc(id)} из сбоя"${disabled}>Исключить</button>` : ""}</li>`;
     }).join("")}</ul>`;
   }
 
@@ -111,7 +115,9 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
     for (const node of list.querySelectorAll("details")) {
       if (expanded.has(node.dataset.key)) node.open = true;
       if (node.dataset.key === focusedKey) {
-        const member = [...node.querySelectorAll("[data-incident]")].find((button) => button.dataset.incident === focused.dataset.incident);
+        const member = [...node.querySelectorAll("[data-incident], [data-exclude]")].find((button) => !button.disabled
+          && (button.hasAttribute("data-incident") ? button.dataset.incident === focused.dataset.incident
+            : button.dataset.exclude === focused.dataset.exclude));
         (member || node.querySelector("summary")).focus({ preventScroll: true });
       }
     }
@@ -188,6 +194,37 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
     await refreshSnapshot();
   }
 
+  async function excludeMember(id, incidentId) {
+    if (busy || refreshRequired || needName()) return;
+    const detail = details.get(id);
+    const member = detail?.incidents.get(incidentId);
+    if (!member) return;
+    const lastPair = detail.outage.incident_ids.length === 2;
+    const prompt = lastPair ? `Исключить ${incidentId}? В сбое останется одна заявка, поэтому группа будет распущена.`
+      : `Исключить ${incidentId} из сбоя? Заявка останется в дашборде.`;
+    if (!window.confirm(prompt)) return;
+    busy = true;
+    status.textContent = `Исключаем ${incidentId}…`;
+    paint();
+    try {
+      const { outage } = await api.excludeOutageMember(id, incidentId, member.hash, detail.outage.incident_ids);
+      if (outage) details.set(id, { outage, incidents: new Map(outage.incidents.map((inc) => [inc.id, inc])) });
+      else details.delete(id);
+      snapshotMessage = outage ? `${incidentId} исключён из сбоя.` : `Группа распущена. Заявки остались в дашборде.`;
+    } catch (e) {
+      if (e.status !== 409 && e.status !== 404) {
+        busy = false;
+        status.textContent = `Не удалось исключить заявку. ${e.message}`;
+        paint();
+        return;
+      }
+      details.delete(id);
+      snapshotMessage = "Состав изменился. Проверьте актуальные данные.";
+    }
+    await refreshSnapshot();
+    if (document.activeElement === document.body) status.focus({ preventScroll: true });
+  }
+
   list.addEventListener("toggle", (event) => {
     const node = event.target;
     if (!node.open || !list.contains(node)) return;
@@ -200,6 +237,7 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
     if (!button) return;
     const id = button.closest("[data-kind]").dataset.id;
     if (button.hasAttribute("data-confirm")) { confirmCandidate(id); return; }
+    if (button.dataset.exclude) { excludeMember(id, button.dataset.exclude); return; }
     if (button.dataset.operation) {
       actOnOutage(id, button.dataset.operation, button.closest("[data-kind]").querySelector("[data-outage-team]")?.value);
       return;

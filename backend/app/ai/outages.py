@@ -5,6 +5,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from math import ceil
 
+from .exclusions import compatible_members
 from .index import Index
 from .llm import LLMWorker, Task, build_outage_prompt, model_key, outage_key
 from .text import clip, minutes_text, plural
@@ -43,10 +44,15 @@ def find_candidates(incidents: dict[str, dict], index: Index) -> list[dict]:
                 right += 1
             if right - left >= MIN_INCIDENTS and len(counts) >= MIN_PRODUCTS:
                 ids = [inc_id for _, inc_id in items[left:right]]
-                candidates.append(_candidate(ids, incidents, index, len(counts)))
-                counts.clear()
-                left = right
-                continue
+                kept = compatible_members(ids, incidents)
+                product_count = len(counts)
+                if len(kept) < len(ids):
+                    product_count = len({incidents[i].get("product") for i in kept} - {None, ""})
+                if len(kept) >= MIN_INCIDENTS and product_count >= MIN_PRODUCTS:
+                    candidates.append(_candidate(kept, incidents, index, product_count))
+                    counts.clear()
+                    left = right
+                    continue
             product = products[left]
             if product:
                 counts[product] -= 1

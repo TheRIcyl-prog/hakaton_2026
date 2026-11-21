@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .adapter import (adapt_all, content_hash, iso, norm_team, outage_link, parse_dt, resolve_priority_id,
+from .adapter import (adapt_all, content_hash, iso, norm_team, outage_excluded_with, outage_link, parse_dt, resolve_priority_id,
                       resolve_state_id, to_str, unwrap)
 from .config import Rules
 
@@ -148,13 +148,17 @@ class Itsm:
         with lock:
             data = self._load()
             pos = {str(r.get("id", "")).strip(): i for i, r in enumerate(data) if isinstance(r, dict)}
-            missing = [i for i in [master_id, *doubles] if i not in pos]
+            members = [master_id, *doubles]
+            missing = [i for i in members if i not in pos]
             if missing:
                 raise ItsmError(f"нет в файле: {', '.join(missing)}", 404)
+            member_ids = set(members)
+            if any((outage_excluded_with(data[pos[i]].get("outageExclusions")) & member_ids) - {i} for i in members):
+                raise ItsmError("в группе есть ранее исключённая связь — обновите снимок", 409)
             now = self.now_fn()
             new_data = list(data)
             changed = []
-            for inc_id in [master_id, *doubles]:
+            for inc_id in members:
                 rec = copy.deepcopy(data[pos[inc_id]])
                 is_master = inc_id == master_id
                 rec["isMaster"], rec["isDouble"] = is_master, not is_master
@@ -205,6 +209,54 @@ class Itsm:
             outage = self.store.outage(candidate_id)
             assert outage is not None
             return outage
+
+    def remove_outage_incident(self, outage_id: str, inc_id: str, by: str, expected_hash: str,
+                               expected_incident_ids: list[str]) -> dict | None:
+        by = by.strip()
+        if not by:
+            raise ItsmError("укажите имя координатора")
+        conflict = "заявка или состав сбоя изменились — откройте сбой заново"
+        if self.store is None:
+            raise ItsmError(conflict, 409)
+        with self.store.write_lock:
+            data = self._load()
+            positions = {to_str(row.get("id")): i for i, row in enumerate(data) if isinstance(row, dict)}
+            members = {key: i for key, i in positions.items() if key and
+                       (outage_link(data[i].get("outage")) or {}).get("id") == outage_id}
+            if inc_id not in members or set(expected_incident_ids) != set(members):
+                raise ItsmError(conflict, 409)
+            if content_hash(data[members[inc_id]]) != expected_hash:
+                raise ItsmError(conflict, 409)
+
+            remaining = sorted(members.keys() - {inc_id})
+            updated = list(data)
+            now = _fmt(self.now_fn())
+            dissolved = len(remaining) < 2
+            removed = dict(data[members[inc_id]])
+            exclusions = removed.get("outageExclusions")
+            removed["outageExclusions"] = [*(exclusions if isinstance(exclusions, list) else []),
+                                            {"outage_id": outage_id, "incident_ids": remaining}]
+            removed.pop("outage", None)
+            _log_outage_change(removed, now, by, "outage_remove", f"Исключён из сбоя {outage_id}")
+            updated[members[inc_id]] = removed
+
+            if dissolved:
+                for key in remaining:
+                    survivor = dict(data[members[key]])
+                    survivor.pop("outage", None)
+                    _log_outage_change(survivor, now, by, "outage_dissolve",
+                                       f"Сбой {outage_id} распущен после исключения {inc_id}")
+                    updated[members[key]] = survivor
+            else:
+                master = data[members[inc_id]]["outage"].get("master_id")
+                if master not in remaining:
+                    master = min(remaining, key=lambda key: (
+                        self.rules.state_kind(resolve_state_id(data[members[key]], self.rules)) != "active", key))
+                for key in remaining:
+                    rec = data[members[key]]
+                    updated[members[key]] = {**rec, "outage": {**rec["outage"], "master_id": master}}
+            self._commit(updated, by)
+            return self.store.outage(outage_id, include_incidents=True)
 
     def act_on_outage(self, outage_id: str, operation: str, by: str, expected_hashes: dict[str, str],
                       team: str | None = None, comment: str | None = None) -> dict:
@@ -403,6 +455,12 @@ class Itsm:
             backup(self.path, backup_dir, self.backups_keep)
             _atomic_write(self.path, dumps(data))
         return len(incs)
+
+
+def _log_outage_change(rec: dict, at: str, by: str, action: str, text: str) -> None:
+    log = rec.get("workLog")
+    rec["workLog"] = [*(log if isinstance(log, list) else []),
+                      {"at": at, "author": by, "action": action, "text": text}]
 
 
 def _unpack(res) -> tuple[str, str, dict]:

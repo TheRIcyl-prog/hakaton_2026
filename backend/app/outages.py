@@ -49,6 +49,32 @@ def _available(inc: dict) -> bool:
     return inc["state_kind"] == "active" and not inc.get("outage")
 
 
+def _compatible_effects(root: str, effects: list[str], parents: dict[str, str], incidents: dict[str, dict]) -> list[str]:
+    members = {root, *effects}
+    blocked = set()
+    for inc_id in members:
+        for other in (members.intersection(incidents[inc_id].get("_outage_excluded_with", ())) - {inc_id}):
+            ancestor = other
+            while ancestor is not None and ancestor != inc_id:
+                ancestor = parents.get(ancestor)
+            # Обычно исключаем инициатора запрета. Если он предок, отсекаем зависимую ветку.
+            blocked.add(other if ancestor == inc_id else inc_id)
+    if not blocked:
+        return effects
+
+    children = defaultdict(list)
+    for effect in effects:
+        children[parents[effect]].append(effect)
+    kept = []
+    pending = list(children[root])
+    while pending:
+        effect = pending.pop()
+        if effect not in blocked:
+            kept.append(effect)
+            pending.extend(children[effect])
+    return kept
+
+
 def _explicit_proposals(incidents: dict[str, dict]) -> Iterable[dict]:
     parents = {inc_id: inc["cause_incident_id"] for inc_id, inc in incidents.items()
                if inc.get("cause_incident_id") and _available(inc)}
@@ -73,7 +99,8 @@ def _explicit_proposals(incidents: dict[str, dict]) -> Iterable[dict]:
         if root is not None:
             effects[root].append(inc_id)
     for root in sorted(effects):
-        yield {"master_id": root, "ids": [root, *effects[root]], "source": "rules",
+        kept = _compatible_effects(root, effects[root], parents, incidents)
+        yield {"master_id": root, "ids": [root, *kept], "source": "rules",
                "name": f"Причина и следствия · {incidents[root]['title']}",
                "reason": f"Явные ссылки causeIncidentId ведут к {root}. Связь требует подтверждения координатором."}
 
@@ -91,12 +118,15 @@ def _build_candidates(proposals: Iterable[dict], incidents: dict[str, dict], *, 
         master_id, ids = proposal.get("master_id"), proposal.get("ids")
         if not isinstance(ids, list) or any(not isinstance(i, str) for i in ids) or master_id not in ids:
             continue
-        member_ids = [master_id, *sorted(set(ids) - {master_id})]
+        member_set = set(ids)
+        member_ids = [master_id, *sorted(member_set - {master_id})]
         if len(member_ids) < min_members or not reserved.isdisjoint(member_ids):
             continue
         if any(i not in incidents or not _available(incidents[i]) for i in member_ids):
             continue
         members = [incidents[i] for i in member_ids]
+        if any(member_set.intersection(inc.get("_outage_excluded_with", ())) for inc in members):
+            continue
         link = {key: proposal[key] for key in ("master_id", "name", "reason", "source")}
         hashes = {inc["id"]: inc["hash"] for inc in members}
         # Фронт отправляет только ID. Изменение предложения или любой его записи меняет этот ID.

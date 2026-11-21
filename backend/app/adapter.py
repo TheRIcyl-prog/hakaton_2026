@@ -177,6 +177,13 @@ def _coordinator(value: Any) -> dict | None:
     return {"name": name, "at": iso(parse_dt(value.get("at")))}
 
 
+def outage_excluded_with(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {other for scope in value if isinstance(scope, dict) and isinstance(scope.get("incident_ids"), list)
+            for other in scope["incident_ids"] if isinstance(other, str)}
+
+
 def outage_link(value: Any) -> dict | None:
     if not isinstance(value, dict) or not isinstance(value.get("id"), str) or not value["id"].strip():
         return None
@@ -254,6 +261,8 @@ def adapt_one(raw: dict, rules: Rules, itsm_template: str) -> dict | None:
     link = outage_link(raw.get("outage"))
     if link is not None:
         incident["outage"] = link
+    if excluded_with := outage_excluded_with(raw.get("outageExclusions")):
+        incident["_outage_excluded_with"] = excluded_with
     if escalation := _latest_escalation(raw.get("workLog")):
         incident["_escalation"] = escalation
     return incident
