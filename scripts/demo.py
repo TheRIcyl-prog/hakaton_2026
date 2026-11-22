@@ -54,17 +54,17 @@ def load(path: Path = WORK) -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def save(data: list[dict]) -> None:
-    fd, tmp = tempfile.mkstemp(dir=WORK.parent, suffix=".tmp")
+def save(data: list[dict], path: Path = WORK) -> None:
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     for _ in range(20):  # на Windows файл может быть на миг занят читающим сервером
         try:
-            os.replace(tmp, WORK)
+            os.replace(tmp, path)
             return
         except PermissionError:
             time.sleep(0.05)
-    os.replace(tmp, WORK)
+    os.replace(tmp, path)
 
 
 def find(data: list[dict], ids: tuple[str, ...]) -> dict:

@@ -53,6 +53,10 @@ The server keeps sessions in memory. They expire two hours after sign-in by defa
 
 For two workstations, generate a second password verifier and build `$demoAccount2` with its own `id`, `login`, `display_name` and `password_hash`. Set `$env:DEMO_ACCOUNTS = ConvertTo-Json -InputObject @($demoAccount, $demoAccount2) -Compress` and sign in from separate browser profiles or computers. Logins and display names must be unique ignoring case and surrounding spaces. To admit another computer on a trusted demo network, start with `--host 0.0.0.0`, add the server's exact LAN origin, such as `http://192.168.1.20:8000`, to `DEMO_ORIGINS` and use that URL. Add the corresponding `https://…` origin when serving via HTTPS. The session cookie is marked Secure on HTTPS.
 
+## Rehearse individual tabs
+
+On Windows, open [defense-demo.cmd](scripts/defense-demo.cmd) to choose an isolated scenario. Each run opens the corresponding screen and waits for Enter before applying each event. See the [scenario list](docs/defense-scenarios.md#отдельные-сценарии-по-вкладкам) for the direct launch commands.
+
 ## Run with AI
 
 Set `GIGACHAT_CREDENTIALS` in the local `.env` and use `$env:LLM_PROVIDER = 'gigachat'` in the terminal before launching the server. The value in the terminal takes precedence over `.env`. The selected GigaChat account needs access to the configured `GIGACHAT_MODEL` and, if set, `GIGACHAT_MODEL_ADVANCED`.

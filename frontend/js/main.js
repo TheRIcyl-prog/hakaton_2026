@@ -83,6 +83,8 @@ const queue = mountQueue(queueEl, {
 });
 
 function loadView() {
+  const requestedView = new URLSearchParams(location.search).get("view");
+  if (Object.hasOwn(VIEW_TITLES, requestedView)) return requestedView;
   try { const v = localStorage.getItem(VIEW_KEY); return Object.hasOwn(VIEW_TITLES, v) ? v : "queue"; } catch { return "queue"; }
 }
 

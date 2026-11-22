@@ -383,15 +383,15 @@
   {
     "sysId": "179400000030000006",
     "id": "INC000030000006",
-    "state": "Закрыт",
-    "stateEnum": "Closed",
-    "stateId": 10,
+    "state": "Назначен",
+    "stateEnum": "Assigned",
+    "stateId": 0,
     "stateReason": "Постоянное решение",
     "stateReasonId": "1",
     "submitDate": "2026-11-20T20:27:13Z",
     "deadline": "2026-11-21T08:27:13Z",
     "completionDate": "2026-11-21T23:51:30Z",
-    "lastAssignmentToTeamDateTime": "2026-11-21T23:42:39Z",
+    "lastAssignmentToTeamDateTime": "2026-11-22T04:00:24Z",
     "header": "Сапоги бегут не в ту сторону",
     "description": "Навигация сапог ведёт за тридевять земель вместо соседней деревни.",
     "shortDescription": "Навигация сапог ведёт за тридевять земель вместо соседней деревни.",
@@ -3082,8 +3082,8 @@
     "incType": "МИ",
     "serviceTypeId": 20,
     "serviceType": "Пользовательский",
-    "priorityId": 3,
-    "priority": "Высокий",
+    "priorityId": 4,
+    "priority": "Наивысший",
     "urgencyId": 4,
     "urgency": "Наивысшая",
     "impactId": 3,
@@ -3101,7 +3101,19 @@
     "eliminationType": null,
     "eliminationTypeId": null,
     "receivingChannel": "Обращение клиента",
-    "solution": null
+    "solution": null,
+    "coordinator": {
+      "name": "Демо-координатор",
+      "at": "2026-11-22T04:17:57Z"
+    },
+    "workLog": [
+      {
+        "at": "2026-11-22T04:17:57Z",
+        "author": "Демо-координатор",
+        "action": "take",
+        "text": "взял в работу"
+      }
+    ]
   },
   {
     "sysId": "179400000030000146",
@@ -3201,8 +3213,8 @@
     "incType": "МИ",
     "serviceTypeId": 10,
     "serviceType": "Клиентский",
-    "priorityId": 3,
-    "priority": "Высокий",
+    "priorityId": 4,
+    "priority": "Наивысший",
     "urgencyId": 4,
     "urgency": "Наивысшая",
     "impactId": 3,
@@ -24926,7 +24938,19 @@
     "eliminationType": null,
     "eliminationTypeId": null,
     "receivingChannel": "Обращение клиента",
-    "solution": null
+    "solution": null,
+    "coordinator": {
+      "name": "Демо-координатор",
+      "at": "2026-11-22T04:02:08Z"
+    },
+    "workLog": [
+      {
+        "at": "2026-11-22T04:02:08Z",
+        "author": "Демо-координатор",
+        "action": "take",
+        "text": "взял в работу"
+      }
+    ]
   },
   {
     "sysId": "179400000030000599",
@@ -26126,11 +26150,11 @@
     "submitDate": "2026-11-20T17:48:17Z",
     "deadline": "2026-11-20T23:48:17Z",
     "completionDate": "2026-11-20T21:46:21Z",
-    "lastAssignmentToTeamDateTime": "2026-11-21T22:49:29Z",
+    "lastAssignmentToTeamDateTime": "2026-11-22T04:00:24Z",
     "header": "Сотрудники не могут войти в терем",
     "description": "Игла в яйце не отвечает: каталог пользователей отвечает с задержкой.",
     "shortDescription": "Игла в яйце не отвечает.",
-    "assignedGroupName": "КЦ ИТ Координаторы Массовых Инцидентов",
+    "assignedGroupName": "КЦ Кощеева сеть",
     "assignedEmployee": null,
     "assignedEmployeeLogin": null,
     "initiatorName": "Царь Горох (goroh)",
@@ -26177,12 +26201,23 @@
         "author": "Андрей Сердюков",
         "action": "take",
         "text": "взял в работу"
+      },
+      {
+        "at": "2026-11-22T04:00:16Z",
+        "author": "Демо-координатор",
+        "action": "take",
+        "text": "взял в работу (был у Андрей Сердюков)"
+      },
+      {
+        "at": "2026-11-22T04:00:24Z",
+        "author": "Демо-координатор",
+        "action": "assign",
+        "text": "передан: КЦ ИТ Координаторы Массовых Инцидентов → КЦ Кощеева сеть; снят с координатора Демо-координатор",
+        "kind": "team",
+        "before": "КЦ ИТ Координаторы Массовых Инцидентов",
+        "after": "КЦ Кощеева сеть"
       }
-    ],
-    "coordinator": {
-      "name": "Андрей Сердюков",
-      "at": "2026-11-21T22:50:06Z"
-    }
+    ]
   },
   {
     "sysId": "179400000030000624",
