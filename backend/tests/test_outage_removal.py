@@ -2,7 +2,6 @@ import json
 from datetime import timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 
 from backend.app.adapter import iso
 from backend.app.itsm import Itsm, ItsmError
@@ -12,11 +11,11 @@ from .conftest import NOW, make, write
 
 
 def _body(outage, inc_id):
-    return {"by": "Ольга", "expected_incident_ids": outage["incident_ids"],
+    return {"expected_incident_ids": outage["incident_ids"],
             "expected_hash": next(inc["hash"] for inc in outage["incidents"] if inc["id"] == inc_id)}
 
 
-def test_delete_outage_member_checks_both_versions_and_dissolves_atomically(make_store, monkeypatch):
+def test_delete_outage_member_checks_both_versions_and_dissolves_atomically(make_store, monkeypatch, coordinator_clients):
     monkeypatch.setenv("LLM_PROVIDER", "rules")
     from backend.app import main
 
@@ -30,7 +29,7 @@ def test_delete_outage_member_checks_both_versions_and_dissolves_atomically(make
     monkeypatch.setattr(main, "itsm", itsm)
     [candidate] = store.snapshot()["outage_candidates"]
     outage_id = itsm.confirm_outage(candidate["id"], "Иван")["id"]
-    client = TestClient(main.app)
+    client = coordinator_clients(main.app, "Ольга")["Ольга"]
     url = f"/api/outages/{outage_id}"
     initial = client.get(url).json()
     initial_a = _body(initial, "A")

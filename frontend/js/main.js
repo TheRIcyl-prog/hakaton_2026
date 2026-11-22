@@ -3,20 +3,34 @@ import * as R from "./render.js";
 import * as Sound from "./sound.js";
 import * as F from "./filters.js";
 import { computeAlerts, processEvents, ring, watchOverdue } from "./alerts.js";
-import { api, getMe, setMe, startPolling } from "./api.js";
+import { api, getMe, startPolling } from "./api.js";
+import { getSessionSignal, logout, sessionFetch } from "./session.js";
 import { openTransfer, openEscalate, closeModal } from "./desk.js";
 import * as S from "./search.js";
 import { renderPanel } from "./panel.js";
-import { mountOutages } from "./outages.js";
+import { mountOutages, tickOutageGrowth } from "./outages.js";
+import { mountHandoffs } from "./handoffs.js";
+import { mountRecentlyClosed } from "./recently-closed.js";
 import { mountQueue } from "./queue.js";
-import { mountCardSettings } from "./card-settings.js";
+import { mountLoadMap } from "./load-map.js";
+import { mountCardSettings, defaultCardFields } from "./card-settings.js";
 import { mountColumnSettings } from "./column-settings.js";
 import { openIncidentStatus } from "./incident-status.js";
+import { sameCoordinator } from "./format.js";
 import { aiEnabled } from "./ai-mode.js";
 
+const sessionSignal = getSessionSignal();
 const HIGHLIGHT_MS = 15000;
 const VIEW_KEY = "mi-dashboard:view";
-const VIEWS = ["board", "queue", "outages", "mine", "feed"];
+const VIEW_TITLES = {
+  queue: "Очередь координатора",
+  board: "Группы инцидентов",
+  outages: "Сбои",
+  handoff: "Передача смены",
+  mine: "Мои инциденты",
+  feed: "Лента событий",
+  recent: "Недавно закрытые",
+};
 const CHANGE_TYPES = new Set(["priority_changed", "deadline_changed", "team_changed", "assignee_changed", "status_changed",
   "became_critical", "to_coordinators", "from_coordinators", "resolved", "reopened", "critical_resolved", "new", "comment", "escalated"]);
 
@@ -46,22 +60,30 @@ const nowMs = () => Date.now() + state.offsetMs;
 const filtersEl = document.getElementById("filters");
 const outagesEl = document.getElementById("outages");
 const queueEl = document.getElementById("queue");
+const workspace = document.getElementById("workspace");
+const viewTitle = document.getElementById("view-title");
+const loadMapToggle = document.getElementById("load-map-toggle");
+const loadMap = mountLoadMap(document.getElementById("load-map"), openDrawer);
+const recentlyClosed = mountRecentlyClosed(document.getElementById("recent"), openDrawer, sessionSignal);
+const handoffs = mountHandoffs(document.getElementById("handoff"), openDrawer, sessionSignal);
+let mapOpen = false;
+loadMapToggle.onclick = () => { mapOpen = !mapOpen; renderMain(); };
 const settingsDialog = document.getElementById("card-settings");
 const cardSettings = mountCardSettings(settingsDialog, { getName: getMe, onChange: renderMain });
 const columnDialog = document.getElementById("column-settings");
 const columnSettings = mountColumnSettings(columnDialog, { getName: getMe, onChange: renderMain });
-const { render: renderOutages, reviewCandidate } = mountOutages(outagesEl, { open: openDrawer, refresh: () => refreshSnapshot(), needName, toast: R.toast });
+const { render: renderOutages, reviewCandidate } = mountOutages(outagesEl, { open: openDrawer, refresh: () => refreshSnapshot(), toast: R.toast });
 const queue = mountQueue(queueEl, {
-  getSnapshot: () => state.snap, open: (id, isCurrent) => openDrawer(id, undefined, isCurrent), copy, needName, toast: R.toast,
+  getSnapshot: () => state.snap, open: (id, isCurrent) => openDrawer(id, undefined, isCurrent), copy, toast: R.toast,
   reviewOutage: (id) => {
     setView("outages");
     if (!reviewCandidate(id)) R.toast("Предложение изменилось. Выберите актуальное в списке сбоев.", "bad");
   },
-  refreshSnapshot: () => refreshSnapshot(), tickCountdowns: () => R.tickCountdowns(nowMs()),
+  signal: sessionSignal, refreshSnapshot: () => refreshSnapshot(), tickCountdowns: () => R.tickCountdowns(nowMs()),
 });
 
 function loadView() {
-  try { const v = localStorage.getItem(VIEW_KEY); return VIEWS.includes(v) ? v : "queue"; } catch { return "queue"; }
+  try { const v = localStorage.getItem(VIEW_KEY); return Object.hasOwn(VIEW_TITLES, v) ? v : "queue"; } catch { return "queue"; }
 }
 
 // ---------- данные ----------
@@ -91,16 +113,17 @@ const refreshSnapshot = startPolling(
     if (filterChanged && state.listMode === "all") openList("all");
     queue.refresh();
     onServerChange();
+    state.started = true;
   },
   (online) => {
     state.online = online;
     if (online) state.lastOkMs = Date.now();
     R.renderStatus(state);
   },
+  sessionSignal,
 );
 window.addEventListener("storage", () => {
   if (!state.snap) return;
-  queue.syncBy();
   if (ui.cardFields !== cardSettings.fields() || ui.columns !== columnSettings.settings(state.snap.groups)) renderMain();
 });
 
@@ -122,7 +145,7 @@ function openList(mode) {
   const q = search.value.trim();
   if (mode === "search") S.showResults(`Поиск «${q}» по всем инцидентам`, { q });
   else if (mode === "all") S.showResults(`Все активные по фильтру: ${F.describe() || "без фильтров"}`, F.toParams(getMe()));
-  else S.showResults("Активные вне групп (средний и низкий приоритет)", { status: "active", priority: "2,1" });
+  else S.showResults("Активные вне групп", { group: "outside" });
 }
 
 let totalReq = 0;
@@ -159,11 +182,23 @@ async function fetchExtra(id) {
   try {
     const inc = await api.incident(id);
     if (detailRequests.get(id) !== request) return;
-    state.history.set(id, { hash: inc.hash, list: inc.history || [] });
+    state.history.set(id, { hash: inc.hash, list: inc.history || [], receipt: inc.escalation_receipt });
     if (!state.snap || !state.snap.incidents[id]) state.extra.set(id, inc);
     if (state.openId === id) paintPanel();
   } catch { /* удалён из файла — панель покажет последнее, что было */ }
   finally { if (detailRequests.get(id) === request) detailRequests.delete(id); }
+}
+
+function paintCardPreviews() {
+  if (!settingsDialog.open || !state.snap) return;
+  const snap = state.snap;
+  const group = snap.groups.find((entry) => entry.ids.some((id) => snap.incidents[id]?.is_active));
+  const inc = group && snap.incidents[group.ids.find((id) => snap.incidents[id]?.is_active)];
+  document.getElementById("card-settings-previews").hidden = !inc;
+  if (!inc) return;
+  for (const [selector, fields] of [["default-card-preview", defaultCardFields], ["personal-card-preview", cardSettings.fields()]]) {
+    R.renderCardPreview(document.getElementById(selector), inc, group.key, nowMs(), fields, ui.aiEnabled, R.ownerOf(inc, snap));
+  }
 }
 
 function paintPanel() {
@@ -173,7 +208,8 @@ function paintPanel() {
     state.history.set(inc.id, { ...(h || {}), loading: true, hash: h ? h.hash : null });
     fetchExtra(inc.id);
   }
-  renderPanel(inc, state.snap, nowMs(), drawerHandlers, h && h.list);
+  const receipt = h?.hash === inc?.hash ? h?.receipt : null;
+  renderPanel(receipt ? { ...inc, escalation_receipt: receipt } : inc, state.snap, nowMs(), drawerHandlers, h && h.list);
   R.tickCountdowns(nowMs());
 }
 
@@ -182,7 +218,7 @@ function renderAll() {
   if (!snap) return;
   const now = nowMs();
   state.alerts = computeAlerts(snap);
-  R.renderCounters(snap, jumpTo, { compact: true });
+  R.renderCounters(snap, jumpTo, { arm: true });
   R.renderClock(snap, now);
   R.renderAlertLine(state.alerts, alertHandlers);
   renderMain();
@@ -217,20 +253,36 @@ function renderMain() {
   const mineEl = document.getElementById("mine");
   const feedEl = document.getElementById("feedview");
   renderOutages(snap);
+  tickOutageGrowth(nowMs());
   if (state.view === "feed") { state.feedSeenSeq = snap.last_event_seq; R.renderFeedList(snap, feedEl, openDrawer); }
   const mine = state.view === "mine" ? R.renderMine(snap, mineEl, getMe(), now, ui) : null;
   F.renderFilters(filtersEl, snap, shownUniq, total, state.serverTotal);
   if (mine) filtersEl.querySelector(".fl-count").textContent = `Мои · ${mine.shown} из ${mine.total}`;
   const mineN = mine?.total
-    ?? Object.values(snap.incidents).filter((i) => getMe() && i.coordinator && i.coordinator.name === getMe() && i.state_kind === "active").length;
+    ?? Object.values(snap.incidents).filter((i) => sameCoordinator(i.coordinator?.name, getMe()) && i.state_kind === "active").length;
   document.getElementById("mine-count").textContent = mineN ? String(mineN) : "";
-  document.getElementById("board").classList.toggle("hidden", state.view !== "board");
+  const showMap = state.view === "board" && mapOpen;
+  document.getElementById("board").classList.toggle("hidden", state.view !== "board" || showMap);
+  loadMap.setVisible(showMap, snap);
+  loadMapToggle.hidden = state.view !== "board";
+  loadMapToggle.setAttribute("aria-expanded", String(showMap));
+  loadMapToggle.textContent = showMap ? "Показать колонки" : "Карта нагрузки";
   queueEl.classList.toggle("hidden", state.view !== "queue");
   outagesEl.classList.toggle("hidden", state.view !== "outages");
   mineEl.classList.toggle("hidden", state.view !== "mine");
   feedEl.classList.toggle("hidden", state.view !== "feed");
-  filtersEl.classList.toggle("hidden", state.view !== "board" && state.view !== "mine");
-  document.querySelectorAll(".tab[data-view]").forEach((t) => t.classList.toggle("active", t.dataset.view === state.view));
+  recentlyClosed.update(state.view === "recent", snap);
+  handoffs.update(state.view === "handoff");
+  filtersEl.classList.toggle("hidden", (state.view !== "board" && state.view !== "mine") || showMap);
+  workspace.dataset.view = state.view;
+  viewTitle.textContent = VIEW_TITLES[state.view];
+  document.querySelectorAll(".tab[data-view]").forEach((tab) => {
+    const active = tab.dataset.view === state.view;
+    tab.classList.toggle("active", active);
+    if (active) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
+  });
+  paintCardPreviews();
 
   const unseen = Math.max(0, snap.last_event_seq - (state.feedSeenSeq ?? snap.last_event_seq));
   document.getElementById("feed-count").textContent = unseen && state.view !== "feed" ? String(Math.min(unseen, 99)) : "";
@@ -246,9 +298,12 @@ function matchesAll(id) {
 
 // ---------- раз в секунду ----------
 let blink = false;
-setInterval(() => {
+const ticker = setInterval(() => {
   if (!state.snap) return;
   const now = nowMs();
+  tickOutageGrowth(now);
+  const pending = document.querySelector("#drawer [data-escalation-due]");
+  if (pending && Date.parse(pending.dataset.escalationDue) <= now) paintPanel();
   R.tickCountdowns(now);
   R.renderClock(state.snap, now);
   let expired = false;
@@ -261,21 +316,17 @@ setInterval(() => {
   blink = !blink;
   updateChrome();
 }, 1000);
-// «ждут N мин» в строке тревог
-setInterval(() => { if (state.snap) R.renderAlertLine(state.alerts, alertHandlers); }, 15000);
+sessionSignal.addEventListener("abort", () => clearInterval(ticker), { once: true });
 
 function updateChrome() {
   const crit = state.alerts.filter((a) => a.group === "critical").length;
   const coord = state.alerts.filter((a) => a.group === "coordinators").length;
   const base = "АРМ координатора МИ";
-  if (crit) document.title = blink ? `🔴 КРИТИЧЕСКИЙ (${crit}) — ${base}` : `⚠ ${crit} не взято — ${base}`;
-  else if (coord) document.title = blink ? `🟣 На координаторах (${coord}) — ${base}` : base;
+  if (crit) document.title = blink ? `КРИТИЧЕСКИЙ (${crit}) — ${base}` : `${crit} не взято — ${base}`;
+  else if (coord) document.title = blink ? `На координаторах (${coord}) — ${base}` : base;
   else document.title = base;
   setFavicon(crit ? (blink ? "#ff0032" : "#ffffff") : coord ? "#a78bfa" : "#ff0032");
   document.getElementById("topbar").classList.toggle("escalated", state.escalated);
-  const me = document.getElementById("me");
-  const name = getMe();
-  if (me) { me.textContent = name ? `👤 ${name.split(" ")[0]}` : "👤 представьтесь"; me.title = name ? `${name} · сменить имя` : "Представьтесь"; }
 }
 
 let lastFav = "";
@@ -294,26 +345,17 @@ function setFavicon(color) {
 }
 
 // ---------- действия координатора ----------
-function needName() {
-  if (getMe()) return false;
-  document.getElementById("start-overlay").classList.remove("hidden");
-  document.getElementById("me-input").focus();
-  return true;
-}
-
 async function act(fn, okText) {
-  if (needName()) return;
   try {
     await fn();
     if (okText) R.toast(okText);
   } catch (e) {
-    R.toast(`⚠ ${e.message}`, "bad");
+    R.toast(e.message, "bad");
   }
 }
 
 // «Взять в работу»: тревога снимается у всех. Уже у другого → предложить забрать себе.
 async function doClaim(id, force, hash) {
-  if (needName()) return;
   try {
     await api.claim(id, force, hash);
     R.toast(force ? "Забрали себе в работу" : "Взято в работу");
@@ -324,16 +366,15 @@ async function doClaim(id, force, hash) {
     if (name && !force && e.data.hash && confirm(`Инцидент уже в работе: ${name}. Забрать себе?`)) {
       return doClaim(id, true, e.data.hash);
     }
-    if (!name || force || !e.data.hash) R.toast(`⚠ ${e.message}`, "bad");
+    if (!name || force || !e.data.hash) R.toast(e.message, "bad");
     if (force || e.status === 409) refreshSnapshot();
   }
 }
 const alertHandlers = { claim: (id) => doClaim(id), open: (id) => openDrawer(id) };
 function doTransfer(id) {
-  if (needName()) return;
   const inc = getInc(id);
   if (inc) openTransfer(inc, state.snap, {
-    copy, onDone: (message) => { R.toast(`✔ ${message}`); refreshSnapshot(); },
+    copy, onDone: (message) => { R.toast(message, "green"); refreshSnapshot(); },
     reopen: async () => {
       await refreshSnapshot();
       if (!state.snap.incidents[id]) await fetchExtra(id);
@@ -342,14 +383,13 @@ function doTransfer(id) {
   });
 }
 function doEscalate(id, draft) {
-  if (needName()) return;
   const inc = getInc(id);
   if (!aiEnabled(state.snap)) draft = null;
   else if (!draft) {
     const a = (state.snap.actions || []).find((x) => x.incident_id === id && x.kind === "escalate");
     draft = a ? a.draft : null;
   }
-  if (inc) openEscalate(inc, draft, { copy, onDone: (t) => { R.toast(`✔ ${t}`); refreshSnapshot(); } });
+  if (inc) openEscalate(inc, draft, { copy, onDone: (t) => { R.toast(t, "green"); refreshSnapshot(); } });
 }
 
 async function syncStatus(inc) {
@@ -357,7 +397,7 @@ async function syncStatus(inc) {
   statusResults.set(inc.id, entry);
   detailRequests.delete(inc.id);
   state.extra.set(inc.id, inc);
-  if (Array.isArray(inc.history)) state.history.set(inc.id, { hash: inc.hash, list: inc.history });
+  if (Array.isArray(inc.history)) state.history.set(inc.id, { hash: inc.hash, list: inc.history, receipt: inc.escalation_receipt });
   else state.history.delete(inc.id);
   if (state.openId === inc.id) paintPanel();
   const refreshed = await refreshSnapshot();
@@ -370,7 +410,6 @@ async function syncStatus(inc) {
 }
 
 function doChangeStatus(inc) {
-  if (needName()) return;
   openIncidentStatus(inc, {
     loadMeta: async () => (state.meta ||= await api.meta()),
     submit: (record, id, comment, reason) => api.state(record.id, id, comment, reason, record.hash),
@@ -394,7 +433,7 @@ const drawerHandlers = {
   open: (id) => openDrawer(id),
   get me() { return getMe(); },
   claim: (id, force, hash) => doClaim(id, force, hash),
-  release: (id) => act(() => api.release(id), "Отпустили — инцидент снова свободен"),
+  release: (id) => act(() => api.release(id, getInc(id)?.hash), "Отпустили — инцидент снова свободен"),
   confirmDups: (inc) => {
     const d = inc.ai && inc.ai.duplicates;
     if (!d) return;
@@ -403,13 +442,25 @@ const drawerHandlers = {
   transfer: doTransfer,
   changeStatus: doChangeStatus,
   escalate: doEscalate,
+  acknowledgeEscalation: async (inc) => {
+    try {
+      const updated = await api.acknowledgeEscalation(inc.id, inc.escalation_receipt.id, inc.hash);
+      await syncStatus(updated);
+      R.toast("Приём эскалации подтверждён");
+    } catch (error) {
+      R.toast(error.message, "bad");
+      refreshSnapshot();
+    }
+  },
   comment: (id, text) => act(() => api.comment(id, text), "Комментарий добавлен"),
 };
 
 // inc — инцидент из списка поиска. Ссылки по одному номеру могут вести за пределы снимка.
 let drawerRequest = 0;
+let drawerReturnFocus;
 async function openDrawer(id, inc, isCurrent) {
   const request = ++drawerRequest;
+  const previousId = state.openId;
   if (id && !inc && !getInc(id)) {
     await fetchExtra(id);
     if (request !== drawerRequest || (isCurrent && !isCurrent())) return;
@@ -418,8 +469,18 @@ async function openDrawer(id, inc, isCurrent) {
     if (inc) state.extra.set(id, inc);
     fetchExtra(id);
   }
+  const drawer = document.getElementById("drawer");
+  const focusWasInPanel = drawer.contains(document.activeElement);
+  if (id && !focusWasInPanel) drawerReturnFocus = document.activeElement;
   state.openId = id && getInc(id) ? id : null;
+  workspace.classList.toggle("with-panel", !!state.openId);
+  queue.select(state.openId);
   paintPanel();
+  if (state.openId && state.openId !== previousId) drawer.querySelector("h2")?.focus({ preventScroll: true });
+  else if (!state.openId && focusWasInPanel) {
+    const target = drawerReturnFocus?.isConnected ? drawerReturnFocus : document.querySelector(".tab.active");
+    target?.focus({ preventScroll: true });
+  }
   ui.selected = state.openId;
   document.querySelectorAll(".arm .board .card").forEach((c) => c.classList.toggle("selected", c.dataset.id === state.openId));
   if (state.view === "board" && state.snap) R.renderBoard(state.snap, nowMs(), ui);
@@ -436,7 +497,7 @@ function setView(v) {
 }
 
 function jumpTo(key) {
-  if (state.view !== "board") setView("board");
+  if (state.view !== "board" || mapOpen) { mapOpen = false; setView("board"); }
   const col = document.getElementById(`col-${key}`);
   if (!col) return;
   if (col.classList.contains("hidden")) {
@@ -458,7 +519,7 @@ async function copy(text, btn) {
     ta.value = text; document.body.appendChild(ta); ta.select();
     document.execCommand("copy"); ta.remove();
   }
-  if (btn) { const old = btn.textContent; btn.textContent = "Скопировано ✓"; setTimeout(() => (btn.textContent = old), 1500); }
+  if (btn) { const old = btn.textContent; btn.textContent = "Скопировано"; setTimeout(() => (btn.textContent = old), 1500); }
 }
 
 function notify(title, body, id, critical) {
@@ -475,64 +536,80 @@ const paintSound = Sound.bindToggles(document.getElementById("sound-btn"), docum
 
 const menuPop = document.getElementById("menu-pop");
 const menuBtn = document.getElementById("menu-btn");
+const profileBtn = document.getElementById("me");
 function setMenu(open) {
   menuPop.classList.toggle("hidden", !open);
-  menuBtn.setAttribute("aria-expanded", String(open));
+  for (const trigger of [menuBtn, profileBtn]) trigger.setAttribute("aria-expanded", String(open));
 }
-menuBtn.onclick = (e) => { e.stopPropagation(); setMenu(menuPop.classList.contains("hidden")); };
+menuBtn.onclick = profileBtn.onclick = (e) => { e.stopPropagation(); setMenu(menuPop.classList.contains("hidden")); };
 menuPop.onclick = (e) => e.stopPropagation();
 document.addEventListener("click", () => setMenu(false));
-document.getElementById("card-settings-btn").onclick = () => { setMenu(false); cardSettings.open(); };
+document.getElementById("card-settings-btn").onclick = () => { setMenu(false); cardSettings.open(); paintCardPreviews(); R.tickCountdowns(nowMs()); };
 settingsDialog.addEventListener("close", () => menuBtn.focus());
 document.getElementById("column-settings-btn").onclick = () => { setMenu(false); columnSettings.open(); };
 columnDialog.addEventListener("close", () => menuBtn.focus());
 document.querySelectorAll(".tab[data-view]").forEach((t) => (t.onclick = () => setView(t.dataset.view)));
 
-// ---------- начало смены ----------
-const meInput = document.getElementById("me-input");
-meInput.value = getMe();
-function start(withSound) {
-  const name = meInput.value.trim();
-  if (!name) { meInput.focus(); meInput.classList.add("invalid"); return; }
-  setMe(name);
-  if (state.snap) queue.syncBy();
-  document.getElementById("start-overlay").classList.add("hidden");
+// Настройки оповещений доступны после входа и требуют отдельного действия.
+document.getElementById("arm-session").addEventListener("pointerdown", (event) => {
+  if (event.target.closest("#sound-btn, #voice-btn") || Sound.isUnlocked()) return;
   Sound.unlock();
-  if (withSound) {
-    if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
-  } else {
-    Sound.setSound(false);
-    Sound.setVoice(false);
-  }
-  state.started = true;
   paintSound();
-  setTimeout(paintSound, 1000);
-  renderAll();
-}
-document.getElementById("start-btn").onclick = () => start(true);
-document.getElementById("start-silent").onclick = () => start(false);
-meInput.onkeydown = (e) => { if (e.key === "Enter") start(true); };
-document.getElementById("me").onclick = () => {
-  document.getElementById("start-overlay").classList.remove("hidden");
-  meInput.focus();
+  setTimeout(paintSound, 800);
+});
+
+const notificationsBtn = document.getElementById("notifications-btn");
+notificationsBtn.hidden = !("Notification" in window) || Notification.permission !== "default";
+notificationsBtn.onclick = async () => {
+  await Notification.requestPermission();
+  notificationsBtn.hidden = Notification.permission !== "default";
+};
+
+const logoutBtn = document.getElementById("logout-btn");
+const logoutMessage = document.getElementById("logout-message");
+logoutBtn.onclick = async () => {
+  logoutBtn.disabled = true;
+  logoutMessage.textContent = "";
+  try { await logout(); }
+  catch {
+    logoutMessage.textContent = "Не удалось выйти. Попробуйте ещё раз.";
+    logoutBtn.disabled = false;
+    logoutBtn.focus();
+  }
 };
 
 // Импорт / экспорт файла инцидентов
-document.getElementById("export-btn").onclick = () => { setMenu(false); window.location.href = "/api/export"; };
+document.getElementById("export-btn").onclick = async () => {
+  setMenu(false);
+  try {
+    const response = await sessionFetch("/api/export");
+    if (!response.ok) throw new Error(`ошибка ${response.status}`);
+    const url = URL.createObjectURL(await response.blob());
+    try {
+      sessionSignal.throwIfAborted();
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition"))?.[1] || "incidents.json";
+      link.click();
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+  } catch (error) {
+    if (!sessionSignal.aborted) R.toast(`Экспорт не удался: ${error.message}`, "bad");
+  }
+};
 const importInput = document.getElementById("import-input");
 document.getElementById("import-btn").onclick = () => { setMenu(false); importInput.click(); };
 importInput.onchange = async () => {
   const f = importInput.files[0];
   importInput.value = "";
   if (!f) return;
-  if (!confirm(`Заменить текущий файл инцидентов на «${f.name}»? Текущий будет сохранён в cache/backups.`)) return;
+  if (!confirm(`Заменить текущий файл инцидентов на «${f.name}»? Текущий файл будет сохранён в резервной копии.`)) return;
   try {
-    const r = await fetch("/api/import", { method: "POST", body: await f.text() });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || r.status);
-    R.toast(`✔ Загружено инцидентов: ${d.count}`);
+    const d = await api.importFile(await f.text());
+    R.toast(`Загружено инцидентов: ${d.count}`, "green");
   } catch (e) {
-    R.toast(`⚠ Импорт не удался: ${e.message}`, "bad");
+    R.toast(`Импорт не удался: ${e.message}`, "bad");
   }
 };
 
@@ -548,13 +625,13 @@ search.oninput = () => {
 
 // Горячие клавиши: В — взять в работу открытый инцидент (или верхнюю тревогу), Esc — закрыть, / — поиск
 document.addEventListener("keydown", (e) => {
-  if (settingsDialog.open || columnDialog.open) return;
+  if (sessionSignal.aborted || settingsDialog.open || columnDialog.open) return;
   if (e.key === "Escape" && !menuPop.classList.contains("hidden")) {
     setMenu(false);
     menuBtn.focus();
     return;
   }
-  if (e.key === "Enter" && e.target.closest?.(".arm-card button, #menu-btn, #menu-pop")) return;
+  if (e.key === "Enter" && e.target.closest?.("button, a[href], summary")) return;
   const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName);
   if (e.key === "Escape") {
     if (!document.getElementById("modal").classList.contains("hidden")) closeModal();

@@ -84,12 +84,55 @@ def test_finish_windows_from_each_transition_survive_restart(make_store, tmp_pat
     assert "MINE" in closed.snapshot()["incidents"]
     assert any(item["id"] == "aftermath:MINE" for item in closed.queue("Ольга"))
 
-    clock._now = NOW + timedelta(minutes=35)
+    clock._now = NOW + timedelta(minutes=30, seconds=9)
+    closed.poll()
+    assert closed.groups["high"] == ["HIGH"] and closed.groups["research"] == ["RESEARCH"]
+    assert closed.snapshot()["incidents"]["HIGH"]["closed_until"] == (clock.now() + timedelta(seconds=1)).isoformat()
+    clock._now = NOW + timedelta(minutes=30, seconds=10)
     assert closed.poll()
     assert not closed.groups["high"] and not closed.groups["research"]
     assert not (closed.snapshot()["incidents"].keys() & {"HIGH", "MINE", "RESEARCH"})
     assert not any(item["id"] == "aftermath:MINE" for item in closed.queue("Ольга"))
     assert closed.incident("MINE")["state_kind"] == "closed"
+
+
+def test_recently_closed_incidents_stay_searchable_and_survive_restart(make_store, monkeypatch, coordinator_clients):
+    from backend.app import main
+    from fastapi.testclient import TestClient
+
+    clock = FakeClock()
+    day = NOW - timedelta(hours=4)
+    records = [
+        make("LIVE", 7, 4, completionDate=iso(day)),
+        make("IMPORTED", 10, 3, completionDate=iso(NOW - timedelta(hours=1))),
+        make("OLD", 10, 3, completionDate=iso(day)),
+    ]
+    store, path = make_store(records, clock)
+    history_path = path.with_name("history.jsonl")
+    store.history = History(history_path)
+    records[0].update(stateId=10, state="Закрыт", stateEnum="Closed")
+    write(path, records)
+    assert store.poll()
+    clock._now += timedelta(seconds=11)
+    assert store.poll() and not store.groups["critical"]
+
+    store = Store(store.settings, store.rules, clock, history=History(history_path))
+    assert store.poll()
+    assert store.incident("LIVE")["state_kind"] == "closed"
+    assert [row["id"] for row in store.recently_closed("incidents")["items"]] == ["LIVE", "IMPORTED"]
+    assert store.recently_closed("incidents", limit=1)["next_offset"] == 1
+    assert store.recently_closed("incidents", offset=1, limit=1)["previous_offset"] == 0
+    monkeypatch.setattr(main, "store", store)
+    assert TestClient(main.app).get("/api/recently-closed").status_code == 401
+    client = coordinator_clients(main.app, "Ольга")["Ольга"]
+    assert client.get("/api/recently-closed").json()["total"] == 2
+
+    records[0].update(stateId=2, state="Выполняется", stateEnum="WorkInProgress")
+    write(path, records)
+    assert store.poll() and "LIVE" in store.groups["critical"]
+    assert store.recently_closed("incidents")["total"] == 1
+    clock._now = NOW + timedelta(hours=2, seconds=1)
+    assert not store.recently_closed("incidents")["items"]
 
 
 def test_reopened(make_store):
@@ -135,6 +178,22 @@ def test_missing_file_keeps_last_snapshot(make_store):
     assert store.file["status"] == "missing" and "A" in store.incidents
 
 
+def test_nonempty_file_without_incident_ids_keeps_last_snapshot(make_store):
+    store, f = make_store([make("A", 0, 4)])
+    write(f, [{"title": "Запись без номера"}])
+    assert not store.poll()
+    assert store.file["status"] == "corrupt" and "A" in store.incidents
+
+    write(f, [make("A", 0, 3), {"title": "Запись без номера"}])
+    assert store.poll()
+    assert store.file["status"] == "ok" and store.file["warnings"]
+    assert store.incidents["A"]["priority_id"] == 3
+
+    write(f, [])
+    assert store.poll()
+    assert store.file["status"] == "ok" and not store.incidents
+
+
 def test_unchanged_file_no_version_bump(make_store):
     store, _ = make_store([make("A")])
     v = store.version
@@ -163,10 +222,14 @@ def test_file_replaced_resets_baseline(make_store):
 
 # ---------- лёгкий снимок, поиск и фильтры по всем инцидентам (decisions.md, п. 3, 6) ----------
 def test_snapshot_has_only_visible_and_outside_counter(make_store):
-    store, _ = make_store([make("K", 0, 4), make("M", 0, 2), make("L", 2, 1), make("R", 7, 2)])
+    store, _ = make_store([make("K", 0, 4), make("M", 0, 2), make("L", 2, 1), make("R", 7, 2),
+                           make("C", 0, 2, team=COORD)])
     snap = store.snapshot()
-    assert set(snap["incidents"]) == {"K"} and snap["incidents_scope"] == "visible"
-    assert snap["outside_active"] == 2 and snap["active_total"] == 3 and snap["total_incidents"] == 4
+    assert set(snap["incidents"]) == {"K", "C"} and snap["incidents_scope"] == "visible"
+    assert snap["outside_active"] == 2 and snap["active_total"] == 4 and snap["total_incidents"] == 5
+    outside = store.search(group="outside")
+    assert outside["total"] == snap["outside_active"]
+    assert {inc["id"] for inc in outside["items"]} == {"M", "L"}
 
 
 def test_taken_incident_outside_groups_is_visible(make_store):

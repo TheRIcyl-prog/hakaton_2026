@@ -99,10 +99,16 @@ def test_outage_confirmation_restart_and_expiry(make_store, proposal, records):
     body, current_version = store.snapshot_bytes(gzip_ok=False)
     assert current_version > version
     assert json.loads(body)["outages"] == []
+    archive = store.recently_closed("outages")
+    assert archive["total"] == 1
+    assert archive["items"][0]["id"] == outage_id and archive["items"][0]["count"] == 3
+    assert parse_dt(archive["items"][0]["at"]) == NOW + timedelta(minutes=20)
     details = store.outage(outage_id, include_incidents=True)
     assert details["status"] == "resolved"
     assert [inc["id"] for inc in details["incidents"]] == ["A", "B", "C"]
     assert store.outage("missing", include_incidents=True) is None
+    clock._now = NOW + timedelta(hours=3, minutes=20, seconds=1)
+    assert store.recently_closed("outages")["total"] == 0
 
 
 @pytest.mark.parametrize("change", ["record", "linked", "proposal"])

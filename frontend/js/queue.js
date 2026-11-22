@@ -8,17 +8,20 @@ const KINDS = {
   claim: ["Новый критический", "Взять в работу"],
   route: ["Передача", "Передать"],
   escalate: ["Эскалация", "Эскалировать"],
+  escalation_ack: ["Эскалация ждёт приёма", "Открыть эскалацию"],
+  escalation_followup: ["Эскалация без ответа", "Проверить эскалацию"],
   outage: ["Возможный сбой", "Проверить состав"],
   dynamics: ["Динамика", "Посмотреть"],
   aftermath: ["Последствия", "Проверить последствия"],
   deadline: ["Срок", "Посмотреть"],
   recurrence: ["Повтор", "Прошлые случаи"],
 };
-const REVIEW_KINDS = new Set(["dynamics", "aftermath", "deadline", "recurrence"]);
+const REVIEW_KINDS = new Set(["dynamics", "aftermath", "deadline", "recurrence", "escalation_ack", "escalation_followup"]);
+const PRIORITY = { critical: "Критический", high: "Высокий", medium: "Средний", low: "Низкий" };
 const REMINDER_KINDS = new Set(["deadline", "recurrence"]);
 
-function button(action, title, primary = false) {
-  return `<button type="button" class="btn small${primary ? " btn-primary" : ""}" data-queue-act="${action}">${title}</button>`;
+function button(action, title, primary = false, disabled = false) {
+  return `<button type="button" class="btn small${primary ? " btn-primary" : ""}" data-queue-act="${action}"${disabled ? " disabled" : ""}>${title}</button>`;
 }
 
 function itsmLink(value) {
@@ -27,44 +30,68 @@ function itsmLink(value) {
     ? `<a class="btn small" href="${esc(url.href)}" target="_blank" rel="noopener">ITSM</a>` : "";
 }
 
-function renderItem(item, scope, candidate, useAI) {
+function renderItem(item, scope, candidate, snap) {
   const [kind, title] = KINDS[item.kind] || ["Задача", "Открыть"];
   const inc = item.incident;
+  const useAI = aiEnabled(snap);
+  const coordinator = inc && (snap?.incidents?.[inc.id]?.coordinator?.name || snap?.claims?.[inc.id]?.by);
   const review = REVIEW_KINDS.has(item.kind);
   const outage = item.kind === "outage";
   const manual = item.kind === "route" && !useAI;
   const confidence = useAI && item.kind === "route" && Number.isFinite(item.confidence) ? `Уверенность ${Math.round(item.confidence * 100)}%` : "";
   const taskTitle = manual ? "Выбрать команду и передать" : outage && !useAI ? (candidate ? outageTitle(candidate, useAI) : kind) : item.title;
   const reason = manual || (outage && !useAI && (!candidate || modelOutage(candidate, useAI))) ? "" : item.reason;
+  const busy = scope.busy.has(item.id);
   const primary = outage
-    ? item.outage_id && button("review-outage", title, true)
-    : item.incident_id && button(review || !KINDS[item.kind] ? "open" : item.kind, title, true);
-  return `<article class="action${inc?.priority_level === "critical" ? " crit" : item.kind === "escalate" ? " escalate" : ""}" data-queue-id="${esc(item.id)}">
-    <div class="action-head"><span>${kind}${inc?.product ? ` · ${esc(inc.product)}` : ""}</span>
-      ${inc?.deadline ? `<span class="countdown-mini" data-deadline="${esc(inc.deadline)}"></span>` : ""}</div>
-    <div class="action-title">${esc(taskTitle || inc?.title || kind)}</div>
-    ${inc ? `<div class="queue-incident">${esc(inc.id)}${inc.title && inc.title !== taskTitle ? ` · ${esc(inc.title)}` : ""}</div>` : ""}
-    ${reason || confidence ? `<div class="action-reason">${[reason, confidence].filter(Boolean).map(esc).join(" · ")}</div>` : ""}
-    ${candidate ? `<details class="queue-composition"><summary>Состав · ${esc(candidate.incident_ids.length)}</summary>
-      <div>${esc(candidate.incident_ids.join(", "))}</div></details>` : ""}
-    <fieldset class="action-btns"${scope.busy.has(item.id) ? " disabled" : ""}>
-      ${primary || ""}
-      ${outage ? button("dismiss", "Нет") : item.incident_id && !review && KINDS[item.kind] ? button("open", "Подробнее") : ""}
-      ${review && scope.reviewed.has(item.id) ? button("reviewed", "Просмотрено") : ""}
-      ${useAI && item.draft ? button("copy", "Текст") : ""}
-      ${itsmLink(inc?.itsm_url)}
-      ${button("snooze", "Отложить на 15 мин")}
-      ${outage ? "" : button("dismiss", "Не моё")}
-    </fieldset>
+    ? item.outage_id && button("review-outage", title, true, busy)
+    : item.incident_id && !review && KINDS[item.kind] && button(item.kind, title, true, busy);
+  const incidentTitle = inc?.title || taskTitle || kind;
+  return `<article class="action${inc?.priority_level === "critical" ? " crit" : item.kind === "escalate" ? " escalate" : ""}" data-queue-id="${esc(item.id)}"${inc ? ` data-incident-id="${esc(inc.id)}"` : ""}>
+    <div class="queue-priority"><span class="card-prio prio-${esc(inc?.priority_level || "unknown")}">${esc(PRIORITY[inc?.priority_level] || kind)}</span></div>
+    <div class="queue-task">
+      <div class="action-title" title="${esc(incidentTitle)}">${esc(incidentTitle)}</div>
+      <div class="queue-incident">${[inc?.id, inc?.product, kind].filter(Boolean).map(esc).join(" · ")}</div>
+    </div>
+    <div class="queue-owner">${esc(coordinator || (inc ? "Не назначен" : "—"))}</div>
+    <div class="queue-sla">${inc?.deadline ? `<span class="countdown-mini" data-deadline="${esc(inc.deadline)}"></span><small class="queue-sla-label"></small>` : "Срок не задан"}</div>
+    <div class="queue-actions">
+      ${primary || (inc ? button("open", review ? title : "Открыть", false, busy) : "")}
+      <details class="queue-menu">
+        <summary class="btn small" aria-label="Действия по задаче">⋯</summary>
+        <fieldset class="action-btns"${busy ? " disabled" : ""}>
+          ${inc && primary ? button("open", "Открыть карточку") : ""}
+          ${review && scope.reviewed.has(item.id) ? button("reviewed", "Просмотрено") : ""}
+          ${useAI && item.draft ? button("copy", "Текст") : ""}
+          ${itsmLink(inc?.itsm_url)}
+          ${button("snooze", "Отложить на 15 мин")}
+          ${button("dismiss", outage ? "Нет" : "Не моё")}
+          ${taskTitle && taskTitle !== incidentTitle ? `<div class="action-reason">${esc(taskTitle)}</div>` : ""}
+          ${reason || confidence ? `<div class="action-reason">${[reason, confidence].filter(Boolean).map(esc).join(" · ")}</div>` : ""}
+          ${candidate ? `<p class="queue-incident">Состав · ${esc(candidate.incident_ids.join(", "))}</p>` : ""}
+        </fieldset>
+      </details>
+    </div>
   </article>`;
 }
 
-export function mountQueue(el, { getSnapshot, open, copy, needName, toast, reviewOutage, refreshSnapshot, tickCountdowns }) {
+export function mountQueue(el, { getSnapshot, open, copy, signal, toast, reviewOutage, refreshSnapshot, tickCountdowns }) {
   const counter = document.getElementById("queue-count");
   const list = el.querySelector("#queue-items");
   const status = el.querySelector("#queue-status");
   const retry = el.querySelector("#queue-retry");
   const reminders = el.querySelector("#queue-reminders");
+  const total = el.querySelector("#queue-total");
+  const priority = el.querySelector("#queue-priority");
+  let selected;
+
+  function select(id) {
+    selected = id;
+    for (const row of list.querySelectorAll("[data-incident-id]")) {
+      const open = row.querySelector('[data-queue-act="open"]');
+      if (id === row.dataset.incidentId) open.setAttribute("aria-current", "true");
+      else open.removeAttribute("aria-current");
+    }
+  }
   const modal = document.getElementById("modal");
   let scope;
   let read;
@@ -82,17 +109,34 @@ export function mountQueue(el, { getSnapshot, open, copy, needName, toast, revie
     reminders.hidden = !reminderCount;
     reminders.setAttribute("aria-expanded", String(scope.showReminders));
     reminders.textContent = scope.showReminders ? "Скрыть сроки и повторы" : `Показать сроки и повторы (${reminderCount})`;
-    counter.textContent = (scope.showReminders ? scope.items.length : primaryCount) || "";
+    const visibleCount = scope.showReminders ? scope.items.length : primaryCount;
+    counter.textContent = visibleCount || "";
+
     const snap = getSnapshot();
     const candidates = new Map((snap?.outage_candidates || []).map((candidate) => [candidate.id, candidate]));
-    const visible = scope.showReminders ? scope.items : scope.items.filter((item) => !REMINDER_KINDS.has(item.kind));
-    const next = visible.map((item) => renderItem(item, scope, candidates.get(item.outage_id), aiEnabled(snap))).join("")
-      || (scope.loaded && !scope.error ? `<p class="actions-empty">${reminderCount ? "Остались проверки сроков и прошлых случаев" : "В очереди пока нет задач"}</p>` : "");
+    const visible = scope.items.filter((item) => (scope.showReminders || !REMINDER_KINDS.has(item.kind))
+      && (!priority.value || item.incident?.priority_level === priority.value));
+    total.textContent = scope.loaded ? `Задач в очереди: ${visibleCount}${priority.value ? ` · показано: ${visible.length}` : ""}` : "";
+    const next = visible.map((item) => renderItem(item, scope, candidates.get(item.outage_id), snap)).join("")
+      || (scope.loaded && !scope.error ? `<p class="actions-empty">${priority.value ? "Нет задач с выбранным приоритетом" : reminderCount ? "Остались проверки сроков и прошлых случаев" : "В очереди пока нет задач"}</p>` : "");
     if (next === markup) return;
+    const previous = document.activeElement;
+    const focusedId = list.contains(previous) ? previous.closest("[data-queue-id]")?.dataset.queueId : null;
     const expanded = new Set([...list.querySelectorAll("details[open]")].map((d) => d.closest("[data-queue-id]").dataset.queueId));
     markup = next;
     list.innerHTML = next;
-    for (const node of list.querySelectorAll("details")) node.open = expanded.has(node.closest("[data-queue-id]").dataset.queueId);
+    for (const row of list.children) {
+      const menu = row.querySelector("details");
+      if (!menu) continue;
+      menu.open = expanded.has(row.dataset.queueId);
+      if (row.dataset.queueId === focusedId) {
+        const focus = [...row.querySelectorAll("button:enabled, a[href], summary")].find((node) =>
+          node.tagName === previous.tagName && node.dataset.queueAct === previous.dataset.queueAct && node.textContent === previous.textContent);
+        (focus || menu.querySelector("summary")).focus({ preventScroll: true });
+      }
+    }
+    if (focusedId && document.activeElement === document.body) priority.focus({ preventScroll: true });
+    select(selected);
     tickCountdowns();
   }
 
@@ -103,6 +147,7 @@ export function mountQueue(el, { getSnapshot, open, copy, needName, toast, revie
   }
 
   function refresh(urgent = false) {
+    if (signal.aborted) return;
     clearTimeout(timer);
     const by = getMe();
     if (scope?.by !== by) {
@@ -116,7 +161,7 @@ export function mountQueue(el, { getSnapshot, open, copy, needName, toast, revie
     if (read) { readAgain = true; return; }
     const request = new AbortController();
     read = request;
-    api.queue(by, request.signal).then(({ items }) => {
+    api.queue(request.signal).then(({ items }) => {
       if (read !== request) return;
       scope.items = items;
       const ids = new Set(items.map((item) => item.id));
@@ -142,12 +187,12 @@ export function mountQueue(el, { getSnapshot, open, copy, needName, toast, revie
 
   async function apply(item, write, text, { domain = false, form } = {}) {
     const owner = scope;
-    if (!available(owner, item.id) || owner.busy.has(item.id) || needName()) return;
+    if (!available(owner, item.id) || owner.busy.has(item.id)) return;
     owner.busy.add(item.id);
     if (form) form.querySelector("button[type=submit]").disabled = true;
     paint();
     try {
-      await write(owner.by);
+      await write();
       finish();
       if (owner === scope) toast(text);
     } catch (e) {
@@ -183,7 +228,7 @@ export function mountQueue(el, { getSnapshot, open, copy, needName, toast, revie
 
   async function openAction(item) {
     const owner = scope;
-    if (needName() || owner.busy.has(item.id)) return;
+    if (owner.busy.has(item.id)) return;
     owner.busy.add(item.id);
     paint();
     try {
@@ -259,10 +304,16 @@ export function mountQueue(el, { getSnapshot, open, copy, needName, toast, revie
       reviewOutage(item.outage_id);
     } else if (action === "snooze" || action === "dismiss" || (action === "reviewed" && owner.reviewed.has(id))) {
       const operation = action === "snooze" ? "snooze" : "dismiss";
-      apply(item, (by) => api.queuePreference(by, id, operation), operation === "snooze" ? "Отложено на 15 минут" : "Убрано из вашей очереди");
+      apply(item, () => api.queuePreference(id, operation), operation === "snooze" ? "Отложено на 15 минут" : "Убрано из вашей очереди");
     }
   });
   reminders.onclick = () => { scope.showReminders = !scope.showReminders; paint(); };
   retry.onclick = () => refresh(true);
-  return { refresh, syncBy: () => { if (scope?.by !== getMe()) refresh(); } };
+  priority.onchange = () => { if (scope) paint(); };
+  signal.addEventListener("abort", () => {
+    clearTimeout(timer);
+    cancelRead();
+    scope = null;
+  }, { once: true });
+  return { refresh, select };
 }

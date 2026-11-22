@@ -80,14 +80,14 @@
   {
     "sysId": "179400000030000002",
     "id": "INC000030000002",
-    "state": "Назначен",
-    "stateEnum": "Assigned",
-    "stateId": 0,
-    "stateReason": "Нет",
+    "state": "Закрыт",
+    "stateEnum": "Closed",
+    "stateId": 10,
+    "stateReason": "Постоянное решение",
     "stateReasonId": "1",
     "submitDate": "2026-11-20T21:45:13Z",
     "deadline": "2026-11-20T23:32:13Z",
-    "completionDate": null,
+    "completionDate": "2026-11-21T23:42:39Z",
     "lastAssignmentToTeamDateTime": "2026-11-20T22:25:42Z",
     "header": "Желания списываются дважды",
     "description": "У части клиентов рыбка исполнила желание один раз, а списала два.",
@@ -145,11 +145,61 @@
         "author": "Андрей Сердюков",
         "action": "take",
         "text": "взял в работу"
+      },
+      {
+        "at": "2026-11-21T23:19:39Z",
+        "author": "Демо-координатор",
+        "action": "take",
+        "text": "взял в работу (был у Андрей Сердюков)"
+      },
+      {
+        "at": "2026-11-21T23:19:44Z",
+        "author": "Демо-координатор",
+        "action": "state",
+        "text": "статус → Выполняется",
+        "kind": "state",
+        "before": "Назначен",
+        "after": "Выполняется",
+        "before_id": 0,
+        "after_id": 2
+      },
+      {
+        "at": "2026-11-21T23:42:12.943441Z",
+        "author": "Демо-координатор",
+        "action": "escalate",
+        "text": "Эскалировано руководителю группы «КЦ Золотая рыбка Платежи»: срок нарушен.",
+        "escalation_scope": {
+          "team": "кц золотая рыбка платежи",
+          "deadline": "2026-11-20T23:32:13Z",
+          "priority_id": 4
+        }
+      },
+      {
+        "at": "2026-11-21T23:42:39Z",
+        "author": "Демо-координатор",
+        "action": "state",
+        "text": "статус → Завершен",
+        "kind": "state",
+        "before": "Выполняется",
+        "after": "Завершен",
+        "before_id": 2,
+        "after_id": 7
+      },
+      {
+        "at": "2026-11-21T23:42:50Z",
+        "author": "Демо-координатор",
+        "action": "state",
+        "text": "статус → Закрыт",
+        "kind": "state",
+        "before": "Завершен",
+        "after": "Закрыт",
+        "before_id": 7,
+        "after_id": 10
       }
     ],
     "coordinator": {
-      "name": "Андрей Сердюков",
-      "at": "2026-11-20T22:25:47Z"
+      "name": "Демо-координатор",
+      "at": "2026-11-21T23:19:39Z"
     }
   },
   {
@@ -179,8 +229,8 @@
     "incType": "МИ",
     "serviceTypeId": 10,
     "serviceType": "Клиентский",
-    "priorityId": 3,
-    "priority": "Высокий",
+    "priorityId": 4,
+    "priority": "Наивысший",
     "urgencyId": 4,
     "urgency": "Наивысшая",
     "impactId": 4,
@@ -198,7 +248,19 @@
     "eliminationType": null,
     "eliminationTypeId": null,
     "receivingChannel": "Сорока на хвосте принесла",
-    "solution": null
+    "solution": null,
+    "coordinator": {
+      "name": "Демо-координатор",
+      "at": "2026-11-21T23:48:05Z"
+    },
+    "workLog": [
+      {
+        "at": "2026-11-21T23:48:05Z",
+        "author": "Демо-координатор",
+        "action": "take",
+        "text": "взял в работу"
+      }
+    ]
   },
   {
     "sysId": "179400000030000004",
@@ -270,13 +332,13 @@
     "submitDate": "2026-11-20T16:57:13Z",
     "deadline": null,
     "completionDate": "2026-11-20T19:57:13Z",
-    "lastAssignmentToTeamDateTime": "2026-11-20T17:02:13Z",
+    "lastAssignmentToTeamDateTime": "2026-11-22T00:08:48Z",
     "header": "Сотрудники не могут войти в терем",
     "description": "Игла в яйце не отвечает: каталог пользователей отвечает с задержкой.",
     "shortDescription": "Игла в яйце не отвечает.",
     "assignedGroupName": "КЦ Кощеева сеть",
-    "assignedEmployee": "Кощей Бессмертный (koschei)",
-    "assignedEmployeeLogin": "koschei",
+    "assignedEmployee": null,
+    "assignedEmployeeLogin": null,
     "initiatorName": "Старик со старухой (starik)",
     "initiatorLogin": "starik",
     "isEffect": false,
@@ -305,26 +367,37 @@
     "eliminationType": null,
     "eliminationTypeId": null,
     "receivingChannel": "Обращение клиента",
-    "solution": "Избушку развернули к лесу задом, к клиентам передом."
+    "solution": "Избушку развернули к лесу задом, к клиентам передом.",
+    "workLog": [
+      {
+        "at": "2026-11-22T00:08:48Z",
+        "author": "Демо-координатор",
+        "action": "assign",
+        "text": "передан: КЦ ИТ Координаторы Массовых Инцидентов → КЦ Кощеева сеть",
+        "kind": "team",
+        "before": "КЦ ИТ Координаторы Массовых Инцидентов",
+        "after": "КЦ Кощеева сеть"
+      }
+    ]
   },
   {
     "sysId": "179400000030000006",
     "id": "INC000030000006",
-    "state": "Выполняется",
-    "stateEnum": "WorkInProgress",
-    "stateId": 2,
-    "stateReason": "Нет",
+    "state": "Закрыт",
+    "stateEnum": "Closed",
+    "stateId": 10,
+    "stateReason": "Постоянное решение",
     "stateReasonId": "1",
     "submitDate": "2026-11-20T20:27:13Z",
     "deadline": "2026-11-21T08:27:13Z",
-    "completionDate": null,
-    "lastAssignmentToTeamDateTime": "2026-11-20T20:32:13Z",
+    "completionDate": "2026-11-21T23:51:30Z",
+    "lastAssignmentToTeamDateTime": "2026-11-21T23:42:39Z",
     "header": "Сапоги бегут не в ту сторону",
     "description": "Навигация сапог ведёт за тридевять земель вместо соседней деревни.",
     "shortDescription": "Навигация сапог ведёт за тридевять земель вместо соседней деревни.",
-    "assignedGroupName": "КЦ Сапоги-скороходы Логистика",
-    "assignedEmployee": "Кот Баюн (bayun)",
-    "assignedEmployeeLogin": "bayun",
+    "assignedGroupName": "КЦ ИТ Координаторы Массовых Инцидентов",
+    "assignedEmployee": "Дядя Фёдор (unclefedor)",
+    "assignedEmployeeLogin": "unclefedor",
     "initiatorName": "Мельник (melnik)",
     "initiatorLogin": "melnik",
     "isEffect": false,
@@ -353,7 +426,41 @@
     "eliminationType": null,
     "eliminationTypeId": null,
     "receivingChannel": "Обращение клиента",
-    "solution": null
+    "solution": null,
+    "coordinator": {
+      "name": "Ольга",
+      "at": "2026-11-21T23:49:00Z"
+    },
+    "workLog": [
+      {
+        "at": "2026-11-21T23:49:00Z",
+        "author": "Ольга",
+        "action": "take",
+        "text": "взял в работу"
+      },
+      {
+        "at": "2026-11-21T23:51:30Z",
+        "author": "Ольга",
+        "action": "state",
+        "text": "статус → Завершен",
+        "kind": "state",
+        "before": "Назначен",
+        "after": "Завершен",
+        "before_id": 0,
+        "after_id": 7
+      },
+      {
+        "at": "2026-11-21T23:51:40Z",
+        "author": "Ольга",
+        "action": "state",
+        "text": "статус → Закрыт",
+        "kind": "state",
+        "before": "Завершен",
+        "after": "Закрыт",
+        "before_id": 7,
+        "after_id": 10
+      }
+    ]
   },
   {
     "sysId": "179400000030000007",
@@ -1279,14 +1386,14 @@
   {
     "sysId": "179400000030000111",
     "id": "INC000030000111",
-    "state": "Выполняется",
-    "stateEnum": "WorkInProgress",
-    "stateId": 2,
-    "stateReason": "Нет",
+    "state": "Закрыт",
+    "stateEnum": "Closed",
+    "stateId": 10,
+    "stateReason": "Постоянное решение",
     "stateReasonId": "1",
     "submitDate": "2026-11-20T19:00:08Z",
     "deadline": "2026-11-20T21:00:08Z",
-    "completionDate": null,
+    "completionDate": "2026-11-21T23:18:28Z",
     "lastAssignmentToTeamDateTime": "2026-11-20T19:05:08Z",
     "header": "Сапоги шагают на одну милю вместо семи",
     "description": "Деградация семимильного шага, курьеры опаздывают.",
@@ -1335,6 +1442,28 @@
         "author": "Андрей Сердюков",
         "action": "take",
         "text": "взял в работу"
+      },
+      {
+        "at": "2026-11-21T23:18:28Z",
+        "author": "Андрей Сердюков",
+        "action": "state",
+        "text": "статус → Завершен",
+        "kind": "state",
+        "before": "Выполняется",
+        "after": "Завершен",
+        "before_id": 2,
+        "after_id": 7
+      },
+      {
+        "at": "2026-11-21T23:18:45Z",
+        "author": "Андрей Сердюков",
+        "action": "state",
+        "text": "статус → Закрыт",
+        "kind": "state",
+        "before": "Завершен",
+        "after": "Закрыт",
+        "before_id": 7,
+        "after_id": 10
       }
     ],
     "coordinator": {
@@ -3020,7 +3149,30 @@
     "eliminationType": null,
     "eliminationTypeId": null,
     "receivingChannel": "Мониторинг",
-    "solution": null
+    "solution": null,
+    "workLog": [
+      {
+        "at": "2026-11-22T01:03:11.713202Z",
+        "author": "Демо-координатор",
+        "action": "escalate",
+        "text": "Эскалировано руководителю группы «ОГЭ Тридевятое царство»: срок нарушен.",
+        "escalation_scope": {
+          "team": "огэ тридевятое царство",
+          "deadline": "2026-11-20T19:39:05Z",
+          "priority_id": 3
+        }
+      },
+      {
+        "at": "2026-11-22T01:03:45Z",
+        "author": "Демо-координатор",
+        "action": "take",
+        "text": "взял в работу"
+      }
+    ],
+    "coordinator": {
+      "name": "Демо-координатор",
+      "at": "2026-11-22T01:03:45Z"
+    }
   },
   {
     "sysId": "179400000030000147",
@@ -25211,21 +25363,21 @@
   {
     "sysId": "179400000030000608",
     "id": "INC000030000608",
-    "state": "Исследование ситуации",
-    "stateEnum": "Research",
-    "stateId": 20,
+    "state": "Закрыт",
+    "stateEnum": "Closed",
+    "stateId": 10,
     "stateReason": "Постоянное решение",
     "stateReasonId": "430",
     "submitDate": "2026-11-20T13:40:07Z",
     "deadline": "2026-11-21T01:40:07Z",
     "completionDate": "2026-11-20T19:14:29Z",
-    "lastAssignmentToTeamDateTime": "2026-11-20T13:45:07Z",
+    "lastAssignmentToTeamDateTime": "2026-11-22T01:12:51Z",
     "header": "Скатерть не разворачивается у клиентов",
     "description": "Скатерть приходит свёрнутой и не реагирует на «Развернись!».",
     "shortDescription": "Скатерть приходит свёрнутой и не реагирует на «Развернись!».",
-    "assignedGroupName": "КЦ Сапоги-скороходы Логистика",
-    "assignedEmployee": "Добрыня Никитич (dobrynya)",
-    "assignedEmployeeLogin": "dobrynya",
+    "assignedGroupName": "КЦ Жар-птица Медиа",
+    "assignedEmployee": null,
+    "assignedEmployeeLogin": null,
     "initiatorName": "Колобок (kolobok)",
     "initiatorLogin": "kolobok",
     "isEffect": false,
@@ -25254,7 +25406,29 @@
     "eliminationType": null,
     "eliminationTypeId": null,
     "receivingChannel": "Сорока на хвосте принесла",
-    "solution": "Добавлено волшебной силы, нагрузка нормализована."
+    "solution": "Добавлено волшебной силы, нагрузка нормализована.",
+    "workLog": [
+      {
+        "at": "2026-11-22T01:12:51Z",
+        "author": "Ольга",
+        "action": "assign",
+        "text": "передан: КЦ Сапоги-скороходы Логистика → КЦ Жар-птица Медиа",
+        "kind": "team",
+        "before": "КЦ Сапоги-скороходы Логистика",
+        "after": "КЦ Жар-птица Медиа"
+      },
+      {
+        "at": "2026-11-22T01:13:17Z",
+        "author": "Ольга",
+        "action": "state",
+        "text": "статус → Закрыт",
+        "kind": "state",
+        "before": "Исследование ситуации",
+        "after": "Закрыт",
+        "before_id": 20,
+        "after_id": 10
+      }
+    ]
   },
   {
     "sysId": "179400000030000609",
@@ -25787,9 +25961,9 @@
   {
     "sysId": "179400000030000620",
     "id": "INC000030000620",
-    "state": "Исследование ситуации",
-    "stateEnum": "Research",
-    "stateId": 20,
+    "state": "Закрыт",
+    "stateEnum": "Closed",
+    "stateId": 10,
     "stateReason": "Постоянное решение",
     "stateReasonId": "430",
     "submitDate": "2026-11-20T14:29:51Z",
@@ -25830,7 +26004,20 @@
     "eliminationType": null,
     "eliminationTypeId": null,
     "receivingChannel": "Мониторинг",
-    "solution": "Откат заклинания после обновления."
+    "solution": "Откат заклинания после обновления.",
+    "workLog": [
+      {
+        "at": "2026-11-21T23:20:32Z",
+        "author": "Андрей Сердюков",
+        "action": "state",
+        "text": "статус → Закрыт",
+        "kind": "state",
+        "before": "Исследование ситуации",
+        "after": "Закрыт",
+        "before_id": 20,
+        "after_id": 10
+      }
+    ]
   },
   {
     "sysId": "179400000030000621",
@@ -25939,13 +26126,13 @@
     "submitDate": "2026-11-20T17:48:17Z",
     "deadline": "2026-11-20T23:48:17Z",
     "completionDate": "2026-11-20T21:46:21Z",
-    "lastAssignmentToTeamDateTime": "2026-11-20T17:53:17Z",
+    "lastAssignmentToTeamDateTime": "2026-11-21T22:49:29Z",
     "header": "Сотрудники не могут войти в терем",
     "description": "Игла в яйце не отвечает: каталог пользователей отвечает с задержкой.",
     "shortDescription": "Игла в яйце не отвечает.",
-    "assignedGroupName": "КЦ Кощеева сеть",
-    "assignedEmployee": "Конёк-Горбунок (konek)",
-    "assignedEmployeeLogin": "konek",
+    "assignedGroupName": "КЦ ИТ Координаторы Массовых Инцидентов",
+    "assignedEmployee": null,
+    "assignedEmployeeLogin": null,
     "initiatorName": "Царь Горох (goroh)",
     "initiatorLogin": "goroh",
     "isEffect": false,
@@ -25974,7 +26161,28 @@
     "eliminationType": null,
     "eliminationTypeId": null,
     "receivingChannel": "Звонок в контакт-центр",
-    "solution": "Переключение на резервную ступу."
+    "solution": "Переключение на резервную ступу.",
+    "workLog": [
+      {
+        "at": "2026-11-21T22:49:29Z",
+        "author": "Андрей Сердюков",
+        "action": "assign",
+        "text": "передан: КЦ Кощеева сеть → КЦ ИТ Координаторы Массовых Инцидентов",
+        "kind": "team",
+        "before": "КЦ Кощеева сеть",
+        "after": "КЦ ИТ Координаторы Массовых Инцидентов"
+      },
+      {
+        "at": "2026-11-21T22:50:06Z",
+        "author": "Андрей Сердюков",
+        "action": "take",
+        "text": "взял в работу"
+      }
+    ],
+    "coordinator": {
+      "name": "Андрей Сердюков",
+      "at": "2026-11-21T22:50:06Z"
+    }
   },
   {
     "sysId": "179400000030000624",

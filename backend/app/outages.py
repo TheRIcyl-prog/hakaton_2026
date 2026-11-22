@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from bisect import bisect_right
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,7 +11,7 @@ from typing import Iterable
 
 from .adapter import iso, parse_dt
 from .ai.outages import MIN_PRODUCTS, WINDOW
-from .groups import finished_until
+from .groups import finished_until, resolved_moment
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class OutageCandidate:
 class Outage:
     summary: dict
     expires_at: datetime | None
+    completed_at: datetime | None = None
 
     def visible(self, now: datetime) -> bool:
         return self.summary["status"] == "active" or (self.expires_at is not None and now < self.expires_at)
@@ -45,6 +47,43 @@ def _summary(link: dict, members: list[dict]) -> dict:
 
 def _available(inc: dict) -> bool:
     return inc["state_kind"] == "active" and not inc.get("outage")
+
+
+def growth_proposals(members: list[dict], incidents: dict[str, dict]) -> list[dict]:
+    active = [inc for inc in members if inc["state_kind"] == "active"]
+    if not active:
+        return []
+    member_ids = {inc["id"] for inc in members}
+    excluded = set().union(*(inc.get("_outage_excluded_with", ()) for inc in members))
+    dates_by_code = defaultdict(list)
+    for member in active:
+        if (code := member["product_code"]) and (created := parse_dt(member["created_at"])):
+            dates_by_code[code].append(created)
+    for dates in dates_by_code.values():
+        dates.sort()
+    proposals = []
+    for inc in incidents.values():
+        if not _available(inc) or inc["id"] in excluded or member_ids.intersection(inc.get("_outage_excluded_with", ())):
+            continue
+        cause = inc.get("cause_incident_id")
+        if cause in member_ids:
+            reason = f"В выгрузке указана связь с {cause}"
+        elif cause:
+            continue
+        else:
+            code = inc.get("product_code")
+            dates = dates_by_code.get(code)
+            if not dates:
+                continue
+            created = parse_dt(inc["created_at"])
+            if not created:
+                continue
+            earlier_members = bisect_right(dates, created)
+            if not earlier_members or created - dates[earlier_members - 1] > WINDOW:
+                continue
+            reason = f"Общий код {code}, заявка возникла в течение {int(WINDOW.total_seconds() / 3600)} ч"
+        proposals.append({key: inc[key] for key in ("id", "title", "product", "hash")} | {"reason": reason})
+    return proposals
 
 
 def _compatible_effects(root: str, effects: list[str], parents: dict[str, str], incidents: dict[str, dict]) -> list[str]:
@@ -176,12 +215,20 @@ def build_outages(incidents: dict[str, dict], seen_resolved: dict[str, datetime]
     for outage_id, members in groups.items():
         members.sort(key=lambda inc: (inc["id"] != inc["outage"]["master_id"], inc["id"]))
         summary = _summary(members[0]["outage"], members)
+        added = [at for inc in members for entry in inc["work_log"] if entry.get("action") == "outage_add"
+                 and (entry.get("text") or "").endswith(f"({outage_id})") and (at := parse_dt(entry.get("at")))]
+        if added:
+            summary["last_growth_at"] = iso(max(added))
         expires_at = None
+        completed_at = None
         if summary["active_count"]:
             summary["status"] = "active"
         else:
             summary["status"] = "resolved"
             expiries = (finished_until(inc, seen_resolved.get(inc["id"])) for inc in members)
             expires_at = max((at for at in expiries if at is not None), default=None)
-        outages[outage_id] = Outage(summary, expires_at)
+            finishes = (parse_dt(inc.get("resolved_at")) or resolved_moment(inc, seen_resolved.get(inc["id"]))
+                        for inc in members)
+            completed_at = max((at for at in finishes if at is not None), default=None)
+        outages[outage_id] = Outage(summary, expires_at, completed_at)
     return outages

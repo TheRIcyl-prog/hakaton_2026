@@ -1,4 +1,4 @@
-import { api, getMe } from "./api.js";
+import { api } from "./api.js";
 import { esc } from "./format.js";
 
 const TYPES = { route: "Кому передать", summary: "Суть", risk: "Риск", dynamics: "Динамика" };
@@ -53,10 +53,9 @@ export function bindFeedback(host, incident) {
   form.onsubmit = async (event) => {
     event.preventDefault();
     if (draft.pending) return;
-    const by = getMe();
     const isRoute = kind.value === "route";
-    if (!by || (isRoute && !team.value)) {
-      draft.message = by ? "Укажите подходящую команду." : "Сначала представьтесь в АРМ.";
+    if (isRoute && !team.value) {
+      draft.message = "Укажите подходящую команду.";
       paintStatus();
       return;
     }
@@ -65,7 +64,7 @@ export function bindFeedback(host, incident) {
     paintStatus();
     try {
       const result = await api.aiFeedback(incident.id, {
-        by, kind: kind.value, expected_hash: incident.hash,
+        kind: kind.value, expected_hash: incident.hash,
         corrected_team: isRoute ? team.value : null, expected_team: isRoute ? incident.ai.route.team : null,
       });
       draft.message = result.saved ? "Исправление сохранено." : "Это исправление уже учтено.";

@@ -156,12 +156,19 @@ def escalation_scope_changed(change: dict) -> bool:
 def _latest_escalation(value: Any) -> dict | None:
     if not isinstance(value, list):
         return None
+    acknowledgements = {}
     for entry in reversed(value):
         if not isinstance(entry, dict):
             continue
+        request_id = to_str(entry.get("escalation_id"))
+        if entry.get("action") == "escalation_ack" and request_id:
+            acknowledgements.setdefault(request_id, entry)
         if entry.get("action") == "escalate":
             if at := parse_dt(entry.get("at")):
-                return {"at": at, "scope": entry.get("escalation_scope")}
+                ack = acknowledgements.get(request_id, {})
+                return {"at": at, "scope": entry.get("escalation_scope"), "id": request_id,
+                        "by": to_str(entry.get("author")), "due": parse_dt(entry.get("ack_due")),
+                        "accepted_by": to_str(ack.get("author")), "accepted_at": parse_dt(ack.get("at"))}
         if escalation_scope_changed(entry):
             break
     return None

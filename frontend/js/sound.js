@@ -1,5 +1,7 @@
 // Звуки синтезируем WebAudio (без файлов), голос — встроенный синтез речи браузера (ru-RU, работает офлайн).
 // Звук и голос включаются отдельно; выбор запоминается в браузере для каждого экрана (АРМ / стена).
+import { icon } from "./icons.js";
+
 let ctx = null;
 let soundOn = false;
 let voiceOn = false;
@@ -116,16 +118,23 @@ export function speak(text, { delay = 0, urgent = false } = {}) {
 
 // Две кнопки «Звук» и «Голос» в шапке (АРМ и стена). onChange — после переключения.
 export function bindToggles(soundBtn, voiceBtn, onChange) {
+  soundBtn.innerHTML = `${icon("volume-off")} <span>Звук</span>`;
+  voiceBtn.innerHTML = `${icon("voice-off")} <span>Голос</span>`;
+  const soundIcon = soundBtn.querySelector("use");
+  const voiceIcon = voiceBtn.querySelector("use");
+
   const paint = () => {
     const waiting = !unlocked && (soundOn || voiceOn);
     soundBtn.classList.toggle("on", soundOn);
     soundBtn.classList.toggle("wait", waiting && soundOn);
-    soundBtn.textContent = soundOn ? "🔔 Звук" : "🔕 Звук";
+    soundIcon.setAttribute("href", soundOn ? "/icons.svg#volume" : "/icons.svg#volume-off");
+    soundBtn.setAttribute("aria-pressed", String(soundOn));
     soundBtn.title = waiting ? "Кликните по странице — браузер включит звук после нажатия" : (soundOn ? "Звук тревог включён" : "Звук тревог выключен");
     voiceBtn.classList.toggle("on", voiceOn);
     voiceBtn.classList.toggle("wait", waiting && voiceOn);
     voiceBtn.classList.toggle("na", unlocked && !voice);
-    voiceBtn.textContent = voiceOn ? "🗣 Голос" : "🤐 Голос";
+    voiceIcon.setAttribute("href", voiceOn ? "/icons.svg#voice" : "/icons.svg#voice-off");
+    voiceBtn.setAttribute("aria-pressed", String(voiceOn));
     voiceBtn.title = unlocked && !voice ? "В системе нет русского голоса — голос недоступен"
       : waiting ? "Кликните по странице — браузер включит голос после нажатия" : (voiceOn ? "Голос включён" : "Голос выключен");
   };

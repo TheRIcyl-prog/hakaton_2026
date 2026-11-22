@@ -21,13 +21,15 @@ import shutil
 import tempfile
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .adapter import (adapt_all, content_hash, escalation_scope_changed, iso, norm_team, outage_excluded_with,
+from .adapter import (_latest_escalation, adapt_all, adapt_one, content_hash, escalation_scope_changed, iso, norm_team, outage_excluded_with,
                       outage_link, parse_dt, resolve_priority_id, resolve_state_id, to_int, to_str, unwrap)
 from .config import Rules
+from .outages import growth_proposals
 
 if TYPE_CHECKING:  # pragma: no cover
     from .store import Store
@@ -258,6 +260,31 @@ class Itsm:
                 elif set(summary["incident_ids"]) == remaining:
                     return summary
             return None
+
+    def add_outage_incident(self, outage_id: str, inc_id: str, by: str, expected_hash: str,
+                            expected_incident_ids: list[str]) -> dict:
+        if self.store is None:
+            raise ItsmError("сбой недоступен", 404)
+        conflict = "заявка или состав сбоя изменились — проверьте актуальные предложения"
+        with self.store.write_lock:
+            data = self._load()
+            positions = _check_outage_candidate(data, {inc_id: expected_hash}, conflict)
+            template = self.store.settings.itsm_url_template
+            members = [adapt_one(data[i], self.rules, template) for key, i in positions.items() if key
+                       and (outage_link(data[i].get("outage")) or {}).get("id") == outage_id]
+            if not members or {inc["id"] for inc in members} != set(expected_incident_ids):
+                raise ItsmError(conflict, 409)
+            incident = adapt_one(data[positions[inc_id]], self.rules, template)
+            if not growth_proposals(members, {inc_id: incident}):
+                raise ItsmError(conflict, 409)
+            link = data[positions[members[0]["id"]]]["outage"]
+            updated = list(data)
+            rec = {**data[positions[inc_id]], "outage": link}
+            _log_outage_change(rec, _fmt(self.now_fn()), by, "outage_add",
+                               f"Добавлен в сбой «{link['name']}» ({outage_id})")
+            updated[positions[inc_id]] = rec
+            self._commit(updated, by)
+            return self.store.outage(outage_id, include_incidents=True)
 
     def remove_outage_incident(self, outage_id: str, inc_id: str, by: str, expected_hash: str,
                                expected_incident_ids: list[str]) -> dict | None:
@@ -502,7 +529,24 @@ class Itsm:
         scope = {"team": norm_team(team), "deadline": iso(parse_dt(rec.get("deadline"))),
                  "priority_id": resolve_priority_id(rec, self.rules)}
         text = (comment or "").strip()[:1000] or f"эскалирован руководителю группы «{team or '—'}»"
-        return "escalate", text, {"at": iso(now), "escalation_scope": scope}
+        return "escalate", text, {"at": iso(now), "escalation_scope": scope,
+                                  "escalation_id": uuid.uuid4().hex, "ack_due": iso(now + timedelta(minutes=15))}
+
+    def acknowledge_escalation(self, inc_id: str, request_id: str, by: str, expected_hash: str) -> dict:
+        def mutate(rec: dict, _now: datetime):
+            escalation = _latest_escalation(rec.get("workLog"))
+            if (self.rules.state_kind(resolve_state_id(rec, self.rules)) != "active"
+                    or not escalation or escalation["id"] != request_id or escalation["accepted_at"]):
+                raise ItsmError("эскалация уже принята или больше не актуальна", 409)
+            scope = {"team": norm_team(to_str(rec.get("assignedGroupName"))),
+                     "deadline": iso(parse_dt(rec.get("deadline"))), "priority_id": resolve_priority_id(rec, self.rules)}
+            if escalation["scope"] != scope:
+                raise ItsmError("команда, срок или приоритет изменились — проверьте эскалацию", 409)
+            if (escalation["by"] or "").casefold() == by.strip().casefold():
+                raise ItsmError("подтверждение должен дать другой координатор", 403)
+            return "escalation_ack", "Подтверждён приём эскалации", {"escalation_id": request_id}
+
+        return self._update(inc_id, by, mutate, expected_hash)
 
     # ---------- импорт / экспорт ----------
     def import_file(self, text: str, backup_dir: Path) -> int:

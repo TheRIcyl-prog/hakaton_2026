@@ -44,7 +44,7 @@ _dup_groups: list[dict] = []
 _outage_candidates: list[dict] = []
 
 
-def setup(*, feedback_path: Path | None = None) -> None:
+def setup(*, cache_dir: Path = ROOT / "cache", feedback_path: Path | None = None) -> None:
     """MVP starts with AI off. Rules and GigaChat are explicit opt-in modes."""
     global _worker, _status, _history, _feedback
     _worker = None
@@ -55,8 +55,8 @@ def setup(*, feedback_path: Path | None = None) -> None:
         _feedback = feedback_mod.FeedbackStore(None)
         return
     _status = _RULES_STATUS
-    _history = dyn_mod.History(ROOT / "cache" / "ai_history.json")
-    _feedback = feedback_mod.FeedbackStore(feedback_path or ROOT / "cache" / "ai_feedback.json")
+    _history = dyn_mod.History(cache_dir / "ai_history.json")
+    _feedback = feedback_mod.FeedbackStore(feedback_path or cache_dir / "ai_feedback.json")
     if mode != "gigachat":
         return
     from .gigachat import DEFAULT_MODEL, GigaChatClient, GigaChatError
@@ -77,7 +77,7 @@ def setup(*, feedback_path: Path | None = None) -> None:
         return
     if not ca_path.exists():
         log.warning("Нет %s — TLS к GigaChat может не пройти", ca_path)
-    _worker = LLMWorker(client, ROOT / "cache" / "ai_cache.json",
+    _worker = LLMWorker(client, cache_dir / "ai_cache.json",
                         concurrency=int(os.getenv("GIGACHAT_CONCURRENCY", "1")),
                         rpm=int(os.getenv("GIGACHAT_RPM", "20")),
                         advanced_model=os.getenv("GIGACHAT_MODEL_ADVANCED", "").strip() or None)

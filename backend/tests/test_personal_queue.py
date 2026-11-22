@@ -1,7 +1,6 @@
 import json
 from datetime import timedelta
 
-from fastapi.testclient import TestClient
 
 from backend.app.adapter import iso
 from backend.app.itsm import Itsm
@@ -40,7 +39,7 @@ def test_queue_order_visibility_and_release_for_two_coordinators(make_store):
     assert queue_ids(store, "Ольга")[0] == "claim:CRITICAL"
 
 
-def test_queue_preferences_api_are_private_and_persist_until_expiry(make_store, tmp_path, monkeypatch):
+def test_queue_preferences_api_are_private_and_persist_until_expiry(make_store, tmp_path, monkeypatch, coordinator_clients):
     monkeypatch.setenv("LLM_PROVIDER", "rules")
     from backend.app import main
 
@@ -49,10 +48,11 @@ def test_queue_preferences_api_are_private_and_persist_until_expiry(make_store, 
     wall_clock = FakeClock()
     preferences_path = tmp_path / "queue_preferences.json"
     store.queue_preferences = QueuePreferences(preferences_path, wall_clock.now)
-    client = TestClient(main.app)
+    clients = coordinator_clients(main.app, "Ольга", "Иван")
+    client = clients["Ольга"]
 
     def items(by):
-        response = client.get("/api/queue", params={"by": by})
+        response = clients[by].get("/api/queue")
         assert response.status_code == 200
         return {item["id"]: item for item in response.json()["items"]}
 
@@ -63,13 +63,13 @@ def test_queue_preferences_api_are_private_and_persist_until_expiry(make_store, 
     assert claim["incident"]["id"] == claim["incident_id"] == "CRITICAL"
     before = path.read_bytes()
     for operation, item_id in [("snooze", "claim:CRITICAL"), ("dismiss", "route:ROUTE")]:
-        response = client.post("/api/queue/preferences", json={"by": "Ольга", "id": item_id, "operation": operation})
+        response = client.post("/api/queue/preferences", json={"id": item_id, "operation": operation})
         assert response.status_code == 200 and response.json() == {"ok": True}
     assert path.read_bytes() == before
     assert preferences_path.is_file()
-    assert {"claim:CRITICAL", "route:ROUTE"}.isdisjoint(items("ольга"))
+    assert {"claim:CRITICAL", "route:ROUTE"}.isdisjoint(items("Ольга"))
     assert {"claim:CRITICAL", "route:ROUTE"} <= items("Иван").keys()
-    assert {"claim:CRITICAL", "route:ROUTE"} <= items("").keys()
+    assert {"claim:CRITICAL", "route:ROUTE"} <= set(queue_ids(store))
 
     store.queue_preferences = QueuePreferences(preferences_path, wall_clock.now)
     wall_clock._now = NOW + timedelta(minutes=15, microseconds=-1)

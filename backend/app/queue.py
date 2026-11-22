@@ -14,6 +14,7 @@ from .outages import OutageCandidate
 DEADLINE_REMINDER = timedelta(minutes=15)
 COMPACT_FIELDS = ("id", "title", "product", "deadline", "priority_level", "itsm_url")
 ORDER = {"claim": 0, "route": 1, "outage": 2, "escalate": 3,
+         "escalation_ack": 3, "escalation_followup": 3,
          "dynamics": 4, "aftermath": 5, "deadline": 6, "recurrence": 7}
 
 
@@ -33,7 +34,7 @@ def _task(kind: str, title: str, reason: str, *, inc: dict | None = None, outage
                  inc, outage_id)
 
 
-def _escalation_is_current(inc: dict, history: History) -> bool:
+def escalation_is_current(inc: dict, history: History) -> bool:
     entry = inc.get("_escalation")
     if not entry:
         return False
@@ -76,7 +77,7 @@ def build_queue(incidents: dict[str, dict], actions: list[dict], candidates: Ite
             continue
         if action["kind"] == "escalate":
             escalations.add(inc_id)
-            if _escalation_is_current(inc, history):
+            if escalation_is_current(inc, history):
                 continue
             escalations_in_queue.add(inc_id)
         items.append(_item(action, inc))
@@ -103,4 +104,17 @@ def build_queue(incidents: dict[str, dict], actions: list[dict], candidates: Ite
         summary = candidate.summary
         if all(inc_id in visible for inc_id in summary["incident_ids"]):
             items.append(_task("outage", summary["name"], summary["reason"], outage_id=summary["id"]))
+    if by:
+        for inc in incidents.values():
+            entry = inc.get("_escalation") or {}
+            if (inc["state_kind"] != "active" or not entry.get("id") or entry.get("accepted_at")
+                    or not entry.get("due") or not escalation_is_current(inc, history)):
+                continue
+            sender = (entry["by"] or "").casefold() == by
+            kind = "escalation_followup" if sender else "escalation_ack"
+            if sender and now < entry["due"]:
+                continue
+            title = "Проверить эскалацию без ответа" if sender else "Подтвердить приём эскалации"
+            task = _task(kind, title, f"Эскалация от {entry['by']}", inc=inc)
+            items.append({**task, "id": f"{task['id']}:{entry['id']}"})
     return sorted(items, key=lambda item: _order(item, incidents, now))

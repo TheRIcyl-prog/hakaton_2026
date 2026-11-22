@@ -88,6 +88,7 @@ export function openEscalate(inc, draft, { onDone, copy }) {
       <h2>Эскалировать</h2>
       <div class="modal-sub">${esc(inc.product || "")} · ${esc(inc.id)} · команда <b>${esc(inc.team || "—")}</b></div>
       <div class="modal-label">Кому и почему (в журнал работ)</div>
+      <p class="modal-sub">Другой координатор сможет подтвердить приём в АРМ. Срок ответа — 15 минут.</p>
       <textarea name="comment" rows="3">Эскалировано руководителю группы «${esc(inc.team || "")}»: ${esc(inc.forecast && inc.forecast.level === "overdue" ? "срок нарушен" : "срок под угрозой")}.</textarea>
       ${draft ? `<label class="check"><input type="checkbox" name="copy" checked> Скопировать текст эскалации</label>` : ""}
       <div class="modal-error hidden"></div>
@@ -105,7 +106,7 @@ export function openEscalate(inc, draft, { onDone, copy }) {
       await api.escalate(inc.id, form.comment.value.trim() || null, inc.hash);
       if (draft && form.copy?.checked) await copy(draft).catch(() => {});
       if (form.isConnected) closeModal();
-      onDone("Эскалация записана в журнал");
+      onDone("Эскалация записана. Ожидаем подтверждения.");
     } catch (ex) {
       const err = form.querySelector(".modal-error");
       err.textContent = ex.message;

@@ -7,7 +7,7 @@
 ## ⚑ Что фронту поменять (20.11) — коротко
 1. **«Принял» удалён.** `POST /api/alerts/ack` больше нет (сейчас отвечает `405 Method Not Allowed`), заглушки не будет.
    Кнопки «✓» / «Принять все» в строке тревог убрать. Тревогу у всех снимает **«Взять в работу»**:
-   `POST /api/incidents/{id}/claim {by, expected_hash?, force?}`; «Отпустить» — `DELETE /api/incidents/{id}/claim?by=<имя>`.
+   `POST /api/incidents/{id}/claim {expected_hash?, force?}`; «Отпустить» — `DELETE /api/incidents/{id}/claim?expected_hash=…`.
    Подробно — раздел «Тревоги и „Взять в работу“».
 2. **Тревога не взята**, пока `alert.taken_by == null`. Кто взял — `alert.taken_by` и `incident.coordinator = {name, at}`
    («в работе у Ольги»). Отпустили, а инцидент всё ещё в группе, — тревога снова не взята.
@@ -21,13 +21,27 @@
 5. Новые типы событий `taken`, `released`; «на координаторах» уже отсортированы сервером (дольше ждёт — выше).
 
 ## Как фронту получать данные
-Опрос `GET /api/snapshot` раз в 1 с с заголовком `If-None-Match: <ETag из прошлого ответа>`.
+АРМ опрашивает `GET /api/workstation/snapshot`, видеостена — публичный `GET /api/snapshot`, оба раз в 1 с с заголовком `If-None-Match: <ETag из прошлого ответа>`.
 Ничего не поменялось → `304` без тела. Поменялось → `200` с полным снимком и новым `ETag`.
 ⚑ Ответ сжат gzip (браузер распаковывает сам), сериализуется один раз на версию для всех экранов.
 Правка файла видна на сервере за ≤0,5 с (опрос mtime+size раз в 0,25 с; частые правки склеиваются, не чаще раза в 0,5 с),
 пересчёт на 5 000 инцидентов ~0,15–0,6 с → на экране ≤1–1,5 с. Действия из АРМ/ITSM применяются сразу (без опроса).
 
-## `GET /api/snapshot`
+## Демо-сессия координатора
+
+| Метод | Поведение |
+|---|---|
+| `POST /api/auth/login` | `{login, password}` → `200`, cookie `coordinator_session` и профиль `{id, login, display_name}`. При неверных реквизитах — `401`. |
+| `GET /api/auth/me` | Профиль текущей сессии или `401`. Ответ отдаётся с `Cache-Control: no-store`. |
+| `POST /api/auth/logout` | Отзывает сессию и удаляет cookie, ответ `204`. |
+
+Рабочий снимок, поиск, события, детали и история инцидентов, сбои и кандидаты, справочники форм, очередь,
+экспорт и все правки требуют сессии. Без неё API возвращает `401`. Для записи, входа и выхода требуется
+точный `Origin` из `DEMO_ORIGINS` (иначе `403`). Автор правок и владелец настроек очереди берутся из
+профиля. Запросы старых клиентов с `by` не меняют автора. Поля `by`, `author` и `coordinator.name` в выдаче
+по-прежнему доступны. Публичный снимок, используемый анонимной видеостеной, предназначен для синтетических данных.
+
+## Снимок
 ```jsonc
 {
   "version": 7,                       // растёт при любом изменении
@@ -107,6 +121,7 @@
   "hash": "a1b2c3d4e5f6",             // меняется при любой правке записи; ⚑ передавать как expected_hash в действиях
   "groups": ["critical", "coordinators"], // во всех, где показывать; «также в: …» = groups минус текущая
   "resolved_in": ["critical"],        // в этих группах карточка «решён» (зелёная), а не активная
+  "closed_until": null,              // для закрытого: ISO-момент исчезновения из колонки, до 10 секунд после закрытия
   "forecast": {                       // только у активных со сроком, иначе null
     "progress": 0.83,                 // доля истёкшего срока (может быть > 1)
     "level": "breach",                // ok | risk (≥75%) | breach (прогноз: не успеют) | overdue
@@ -204,7 +219,7 @@
 ```
 
 Связка с бэкендом:
-- «Да, это один сбой» → `POST /api/duplicates/confirm` `{"master_id": "...", "ids": [...], "by": "Ольга"}`
+- «Да, это один сбой» → `POST /api/duplicates/confirm` `{"master_id": "...", "ids": [...]}`
   (`master_id` и `ids` — из `ai.duplicates`): в файл `isMaster` у мастера, `isDouble` у остальных + `workLog`;
   ответ `{ok, incidents: [...]}`, после этого у группы `duplicates.confirmed = true`.
 - История изменений: основная — бэкенда (`refs.history`, передаётся в `ai.enrich(..., refs=refs)`), по ней ИИ ищет
@@ -220,7 +235,7 @@
 | `product`, `team` | точное совпадение, можно несколько |
 | `priority` | id через запятую: `4,3` |
 | `coordinator` | «в работе у X» (без учёта регистра); «мои» = своё имя |
-| `group` | `critical` / `coordinators` / `high` / `research` |
+| `group` | `critical` / `coordinators` / `high` / `research` / `outside` (активные вне рабочих групп) |
 | `overdue` | только просроченные (`forecast.level = overdue`) |
 | `burning` | горит срок: прогноз «не успеют» или просрочен |
 | `untaken` | непринятые тревоги: в «критических»/«на координаторах» и никто не взял |
@@ -234,6 +249,13 @@
 Ответ: `{"total": 340, "items": [Incident, ...], "offset": 0, "limit": 100, "now": "..."}` → «12 из 340».
 Порядок: точное совпадение номера первым, активные выше решённых, выше приоритет, меньше осталось времени, новее.
 На 5 000 инцидентов — ~20 мс.
+
+## Недавно закрытые
+
+`GET /api/recently-closed` требует сессию АРМ. Параметры `kind=incidents|outages` и `offset` задают тип записей и страницу. Сервер возвращает до 50 записей за три часа по часам дашборда, от новых к старым. Ответ содержит `items`, `total`, `previous_offset` и `next_offset`.
+
+- Для инцидента `at` — время закрытия из истории переходов или время завершения из исходной выгрузки, если история закрытия отсутствует. Учитывается текущий статус «Закрыт».
+- Для подтверждённого сбоя без активных заявок `at` — последний известный момент завершения участника. Состав открывается через существующий `GET /api/outages/{id}`.
 
 ## Тревоги и «Взять в работу» ⚑ (decisions.md, п. 4, 7)
 Кнопки «Принял» нет, `POST /api/alerts/ack` **удалён**. Тревогу снимает «Взять в работу» — оно пишется в файл
@@ -303,15 +325,15 @@ comment, escalated,` ⚑ `taken, released`. При старте сервера �
 
 | Метод | Тело | Что делает |
 |---|---|---|
-| ⚑ `POST /api/incidents/{id}/claim` | `{by, expected_hash?, force?}` | Claims the incident and updates the shared alert and journal. If already owned by a colleague: `409` with `coordinator` and `hash`. Takeover requires `force: true` and a current `expected_hash`. |
-| ⚑ `DELETE /api/incidents/{id}/claim?by=Имя&expected_hash=…` | — | The current owner releases the incident. `by` is required. |
-| `POST /api/itsm/{id}/assign` | `{team, assignee?, comment?, by, expected_hash?}` | передать в команду (Выполняется → Назначен); ⚑ снимает `coordinator` |
-| `POST /api/itsm/{id}/state` | `{state_id, reason?, comment?, by, expected_hash?}` | смена статуса по `transitions` из АРМ или мини-ITSM, АРМ передаёт `expected_hash` |
-| `POST /api/itsm/{id}/priority` | `{priority_id, recalc_deadline?, comment?, by, expected_hash?}` | приоритет (+ срок по SLA) |
-| `POST /api/itsm/{id}/deadline` | `{deadline (ISO UTC), comment?, by, expected_hash?}` | срок |
-| ⚑ `POST /api/duplicates/confirm` | `{master_id, ids, by}` | «Да, это один сбой»: `isMaster` у мастера, `isDouble` у остальных + журнал (`action: duplicates`), одной записью. Ответ `{ok, incidents: [Incident…]}` |
-| `POST /api/itsm/{id}/comment` | `{text, by}` | комментарий в журнал |
-| `POST /api/itsm/{id}/escalate` | `{comment?, by}` | эскалация (в журнал) |
+| ⚑ `POST /api/incidents/{id}/claim` | `{expected_hash?, force?}` | Claims the incident and updates the shared alert and journal. If already owned by a colleague: `409` with `coordinator` and `hash`. Takeover requires `force: true` and a current `expected_hash`. |
+| ⚑ `DELETE /api/incidents/{id}/claim?expected_hash=…` | — | The current owner releases the incident. |
+| `POST /api/itsm/{id}/assign` | `{team, assignee?, comment?, expected_hash?}` | передать в команду (Выполняется → Назначен); ⚑ снимает `coordinator` |
+| `POST /api/itsm/{id}/state` | `{state_id, reason?, comment?, expected_hash?}` | смена статуса по `transitions` из АРМ или мини-ITSM, АРМ передаёт `expected_hash` |
+| `POST /api/itsm/{id}/priority` | `{priority_id, recalc_deadline?, comment?, expected_hash?}` | приоритет (+ срок по SLA) |
+| `POST /api/itsm/{id}/deadline` | `{deadline (ISO UTC), comment?, expected_hash?}` | срок |
+| ⚑ `POST /api/duplicates/confirm` | `{master_id, ids}` | «Да, это один сбой»: `isMaster` у мастера, `isDouble` у остальных + журнал (`action: duplicates`), одной записью. Ответ `{ok, incidents: [Incident…]}` |
+| `POST /api/itsm/{id}/comment` | `{text, expected_hash?}` | комментарий в журнал |
+| `POST /api/itsm/{id}/escalate` | `{comment?, expected_hash?}` | эскалация (в журнал) |
 | `GET /api/meta` | — | статусы, переходы, приоритеты, SLA, команды |
 | `GET /api/export` / `POST /api/import` | — / JSON-файл | скачать / заменить файл (старый → `cache/backups`) |
 
@@ -349,24 +371,24 @@ Store на каждую правку строит `backend/app/refs.Refs` одн
 после решения последнего участника. Отсутствие записи в `snapshot.incidents` не исключает её из `incident_ids`.
 Группы инцидентов и их счётчики сохраняют прежние правила.
 
-- `POST /api/outages/confirm` с `{candidate_id, by}` подтверждает показанный состав. Возвращает объект из `outages`.
+- `POST /api/outages/confirm` с `{candidate_id}` подтверждает показанный состав. Возвращает объект из `outages`.
   Сервер сверяет текущую версию кандидата и записи участников перед единой транзакцией в JSON. Устаревший
   кандидат или изменённая запись дают `409`. Фронт обновляет снимок перед повтором.
 - `GET /api/outages/{id}` возвращает объект сбоя плюс `incidents` (список объектов Incident с полями карточки).
 - `GET /api/outage-candidates/{id}` возвращает предложение и `incidents` с `id`, `title`, `product`
   и `cause_incident_id` при наличии. Состав доступен в одном запросе, включая заявки вне снимка.
-- `DELETE /api/outage-candidates/{id}/incidents/{inc_id}` с `{by}` исключает заявку до подтверждения.
+- `DELETE /api/outage-candidates/{id}/incidents/{inc_id}` исключает заявку до подтверждения.
   Сервер проверяет версию всего показанного предложения. При изменении возвращает `409` без записи.
   Успех возвращает `{candidate: обновлённое предложение или null}` и сохраняет исключение в журнале.
   Оставшийся подходящий состав нужно подтвердить отдельно. Допускаются две связанные заявки после ручного исключения.
 - `DELETE /api/outages/{id}/incidents/{inc_id}` исключает участника из подтверждённого сбоя. Тело запроса:
-  `{by, expected_hash, expected_incident_ids}`. При изменении записи или состава возвращается `409` без записи.
+  `{expected_hash, expected_incident_ids}`. При изменении записи или состава возвращается `409` без записи.
   Успех возвращает `{outage: объект с incidents}`. Если оставшихся участников меньше двух, сбой распускается
   и возвращается `{outage: null}`. Статусы, владельцы и исполнители сохраняются. Действия отражаются в `workLog`.
   Связка исключённой заявки с прежними участниками сохраняется в файле (`outageExclusions`). Эту связку
   не предлагают повторно. Допустимы новые сбои с другими заявками.
 - `POST /api/outages/{id}/actions` применяет `claim`, `assign` или `escalate` ко всем активным
-  участникам. Запрос принимает `by`, `operation`, `expected_hashes` (`id → hash` активных участников),
+  участникам. Запрос принимает `operation`, `expected_hashes` (`id → hash` активных участников),
   для `assign` обязательно `team`, для `assign` и `escalate` возможен `comment`. Изменение хотя бы одной
   заявки, состава или чужой координатор дают `409` без записи. Успех возвращает обновлённый сбой с `incidents`.
   Действие записывается в `workLog` каждой затронутой заявки с ID сбоя. Решённые и закрытые заявки сохраняются как есть.
@@ -377,6 +399,20 @@ Store на каждую правку строит `backend/app/refs.Refs` одн
 
 На стене показываем подтверждённые сбои. В АРМ раздел «Сбои» содержит предложения, подтверждение и состав.
 В первом сценарии доступны обычные действия над отдельными инцидентами.
+
+## Расширение подтверждённого сбоя
+
+- В `GET /api/outages/{id}` поле `growth_proposals` содержит номер, название, продукт, хэш и основание для каждой подходящей активной заявки без привязки к сбою. Основание — явная связь с участником или общий код с активной заявкой в пределах окна сопоставления. Ранее исключённые связи пропускаются.
+- `POST /api/outages/{id}/incidents/{incident_id}` принимает `expected_hash` и `expected_incident_ids`. Сервер повторно проверяет данные в файле, записывает присоединение в журнал и возвращает обновлённый сбой. Устаревшие данные дают `409`.
+- `last_growth_at` в снимке даёт отметку «Разрастается» на 15 минут после добавления. Состав, продукты и ближайший срок пересчитываются сразу.
+
+## Подтверждение эскалации
+
+Новая эскалация в журнале получает идентификатор и срок ответа 15 минут. В `GET /api/incidents/{id}` поле `escalation_receipt` содержит автора, срок и сведения о подтверждении актуальной эскалации. Другой вошедший координатор подтверждает через `POST /api/itsm/{id}/escalation/acknowledge` с `request_id` и `expected_hash`. Пока ответа нет, у коллег в очереди появляется задача подтверждения. По истечении срока исходящий автор видит задачу проверки. Эскалации, записанные до этого изменения, сохраняются в журнале.
+
+## Передача смены
+
+`GET /api/handoffs` возвращает доступных получателей, предварительную сводку и передачи вошедшего координатора. `POST /api/handoffs` сохраняет снимок сводки и текст следующего шага (`recipient_id`, `note`). `POST /api/handoffs/{id}/acknowledge` доступен получателю. Снимки хранятся в `CACHE_DIR/handoffs.json`. Владение инцидентами меняется существующими действиями в АРМ.
 
 ## Повторные сбои
 
@@ -403,12 +439,11 @@ Store на каждую правку строит `backend/app/refs.Refs` одн
 
 ## Персональная очередь и метки
 
-- `GET /api/queue?by=Ольга` → `{items: [QueueItem, …]}`. Без имени выдаются только свободные задачи.
-  С именем видны свободные задачи и задачи этого координатора. Действие другого координатора не показывается.
+- `GET /api/queue` → `{items: [QueueItem, …]}`. Видны свободные задачи и задачи координатора из сессии.
 - `QueueItem` расширяет `Action`. Поля `incident_id` и `outage_id` допускают `null`. `incident` — компактное
   описание инцидента (`id`, `title`, `product`, `deadline`, `priority_level`, `itsm_url`) либо `null`.
   Виды: `claim`, `route`, `escalate`, `outage`, `dynamics`, `aftermath`, `deadline`, `recurrence`.
-- `POST /api/queue/preferences` с `{by, id, operation}`. `operation`: `snooze` на 15 минут или `dismiss`.
+- `POST /api/queue/preferences` с `{id, operation}`. `operation`: `snooze` на 15 минут или `dismiss`.
   Успех → `{ok: true}`. Предпочтение хранится для этого координатора. Действия над инцидентом идут через текущие API.
   Для `outage` значение `outage_id` — ID предложения для `/api/outages/confirm`, отклонение скрывает предложение в личной очереди.
 - У `Incident` может быть `labels: ["waiting_external", "aftermath", "clients_affected", "reassigned", "recurrence"]`.
@@ -417,7 +452,7 @@ Store на каждую правку строит `backend/app/refs.Refs` одн
 
 ## Исправления подсказок ИИ
 
-- `POST /api/incidents/{id}/ai-feedback` принимает `by`, `expected_hash`, `kind` (`route`, `summary`,
+- `POST /api/incidents/{id}/ai-feedback` принимает `expected_hash`, `kind` (`route`, `summary`,
   `risk`, `dynamics`). Для `route` также обязательны предложенная `expected_team` и выбранная `corrected_team`.
   Изменение заявки или предложенной команды даёт `409`, успех — `{ok: true, saved: true}`. Повтор возвращает `saved: false`.
 - `cache/ai_feedback.json` хранит последние исправления на координатора, заявку и тип подсказки. Имя координатора

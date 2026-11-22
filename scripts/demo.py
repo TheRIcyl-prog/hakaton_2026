@@ -5,6 +5,8 @@
     python scripts/demo.py fresh        # оригинал со сдвигом всех дат так, что «выгрузка» = сейчас (для TIME_MODE=real)
     python scripts/demo.py list         # показать шаги
     python scripts/demo.py step 1       # применить шаг N к текущему рабочему файлу
+    python scripts/demo.py close        # закрыть пример после шага 5
+    python scripts/demo.py finish-outage INC000030000021  # завершить подтверждённый демо-сбой
     python scripts/demo.py all          # прогнать все шаги с паузой (по Enter)
 
 Скрипт меняет только поля, которые есть в формате МТС, и пишет файл атомарно (через временный файл).
@@ -202,6 +204,33 @@ def main(argv: list[str]) -> None:
         STEPS[n - 1](data)
         save(data)
         print(say(f"шаг {n}: {STEPS[n - 1].__doc__}"))
+    elif cmd == "close":
+        data = load()
+        record = find(data, HIGH)
+        if record.get("stateId") != 7:
+            raise SystemExit(say("сначала выполните шаг 5, чтобы завершить инцидент"))
+        set_state(record, 10)
+        save(data)
+        print(say(f"{record['id']}: Закрыт"))
+    elif cmd == "finish-outage":
+        if len(argv) != 3:
+            raise SystemExit(say("укажите номер заявки подтверждённого сбоя"))
+        data = load()
+        record = find(data, (argv[2],))
+        outage = record.get("outage")
+        if not isinstance(outage, dict) or not outage.get("id"):
+            raise SystemExit(say("сначала подтвердите сбой в АРМ"))
+        members = [rec for rec in data if isinstance(rec.get("outage"), dict)
+                   and rec["outage"].get("id") == outage["id"] and rec.get("stateId") in (0, 2)]
+        if not members:
+            print(say("в сбое уже нет активных заявок"))
+            return
+        completed_at = fmt(datetime.now(timezone.utc))
+        for member in members:
+            set_state(member, 7)
+            member.update(completionDate=completed_at, stateReason="Постоянное решение")
+        save(data)
+        print(say(f"Активные заявки сбоя завершены: {len(members)}"))
     elif cmd == "all":
         for i, s in enumerate(STEPS, 1):
             input(say(f"Enter → шаг {i}: {s.__doc__}"))

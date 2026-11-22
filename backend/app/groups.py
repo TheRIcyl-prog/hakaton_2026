@@ -9,7 +9,7 @@ from .config import GroupRule, Rules
 
 DONE = ("resolved", "closed", "research")
 FINISHED_MINUTES = 30
-CLOSED_MINUTES = 5
+CLOSED_SECONDS = 10
 
 
 def _teams(rule: GroupRule) -> frozenset | None:
@@ -44,8 +44,10 @@ def finished_until(inc: dict, seen_at: datetime | None, minutes: int = FINISHED_
     at = resolved_moment(inc, seen_at)
     if at is None:
         return None
-    limit = min(CLOSED_MINUTES, minutes) if inc["state_kind"] == "closed" else minutes
-    return at + timedelta(minutes=limit)
+    window = timedelta(minutes=minutes)
+    if inc["state_kind"] == "closed":
+        window = min(window, timedelta(seconds=CLOSED_SECONDS))
+    return at + window
 
 
 def recently_resolved(inc: dict, rule: GroupRule, now: datetime, seen_resolved_at: datetime | None) -> bool:
@@ -72,6 +74,9 @@ def assign_groups(
         groups: list[str] = []
         resolved_in: list[str] = []  # группы, где инцидент висит как «решён»
         done = inc["state_kind"] in DONE
+        if inc["state_kind"] == "closed":
+            until = finished_until(inc, seen_resolved.get(inc["id"]))
+            inc["closed_until"] = until.isoformat() if until else None
         for rule in rules.groups:
             if _match(inc, rule):
                 groups.append(rule.key)

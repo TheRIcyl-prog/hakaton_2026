@@ -1,10 +1,9 @@
-.wall-urgency { display: flex; flex: none; gap: 20px; align-items: center; padding: 5px 20px; background: var(--panel); color: var(--muted); font-size: 15px; }
+.wall { --wall-gutter: 18px; }
+.wall-urgency { display: flex; flex: none; gap: 16px; align-items: center; color: var(--muted); font-size: 14px; }
 .wall-urgency b { margin-left: 4px; color: var(--text); }
-.wall-urgency span:nth-child(2) b { color: #ff8099; }
-.wall-urgency span:nth-child(3) b { color: var(--amber); }
 .wall-workspace { display: flex; flex: 1; min-width: 0; min-height: 0; }
-.wall-workspace .board { min-width: 0; padding-right: 12px; }
-.wall-owners { flex: 0 0 172px; margin: 14px 20px 14px 0; padding: 12px 10px; min-width: 0; overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+.wall .wall-workspace .board { min-width: 0; padding: 8px 8px 8px var(--wall-gutter); gap: 8px; }
+.wall-owners { flex: 0 0 158px; margin: 8px var(--wall-gutter) 8px 0; padding: 9px; min-width: 0; overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
 .wall-owners h2 { margin: 0; font: 700 16px var(--font-wide); }
 .wall-owners p { margin: 4px 0 8px; color: var(--muted); }
 .wall-owners ul { list-style: none; margin: 0; padding: 0; }
@@ -14,3 +13,43 @@
 .wall .feed-title { flex: none; }
 .wall-recent { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .wall-recent b { color: var(--text); }
+.wall .topbar { justify-content: space-between; min-height: 48px; padding: 5px var(--wall-gutter); }
+.wall-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 8px var(--wall-gutter) 5px; }
+.wall-heading h1 { margin: 0; font: 700 24px/1.2 var(--font-wide); }
+.wall-heading .clock { display: flex; gap: 8px; align-items: baseline; white-space: nowrap; }
+.wall-heading .clock b { font-size: 23px; }
+.wall .counters { margin: 0 var(--wall-gutter) 4px; padding: 2px 4px; gap: 0; flex: none; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+.wall .counter { background: transparent; border: 0; border-radius: 0; flex: 1; min-width: 0; padding: 3px 8px; gap: 8px; cursor: default; }
+.wall .counter + .counter { border-left: 1px solid var(--line); }
+.wall .counter b, .wall .outside-note b { font-size: 22px; min-width: 2ch; }
+.wall .counter.critical b { color: var(--critical); }
+.wall .counter span, .wall .outside-note span { font-size: 13px; overflow-wrap: anywhere; }
+.wall .outside-note { min-width: 0; border-inline-start: 1px solid var(--line); gap: 8px; padding: 3px 8px; }
+.wall .wall-urgency { margin: 0 var(--wall-gutter); padding: 2px 0; }
+.wall-urgency span:nth-child(2) b { color: var(--critical); }
+.wall-urgency span:nth-child(3) b { color: var(--amber); }
+.wall .wall-banner { padding: 4px var(--wall-gutter) 0; }
+.wall .wall-banner .alert { gap: 8px; padding: 6px 12px; background: var(--red-bg); color: var(--critical); animation: none; border: 0; border-radius: var(--radius); }
+.wall .wall-banner .alert-kind { font: 700 16px var(--font); }
+.wall .wall-banner .alert-text { font-size: 16px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.wall .wall-banner .alert-time { font-size: 18px; }
+.wall .column-head { gap: 8px; padding: 6px 10px; }
+.wall .column-head h2 { font-family: var(--font); }
+.wall .card { border: 1px solid var(--line); }
+.wall .card.is-critical { background: var(--panel-2); }
+.wall .card.is-resolved { background: var(--green-bg); }
+.wall .countdown:is(.overdue, .danger) { color: var(--critical); }
+.wall-outages { padding-inline: var(--wall-gutter); }
+.wall .feed { margin: 0 var(--wall-gutter) 7px; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius); }
+@media (prefers-reduced-motion: reduce) {
+  .wall .card { animation: none; }
+}
+
+.wall .counter.has { background: transparent; }
+.wall .card-title {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere;
+}
+.wall .compact-row { flex-wrap: wrap; }
+.wall .compact-row .countdown, .wall .deadline-row .countdown { white-space: normal; }
+.wall .card .st-active { color: var(--green); }

@@ -1,8 +1,9 @@
 // Панель инцидента на АРМ: выезжает поверх колонок справа, Esc закрывает (decisions.md, п. 5–7).
 // Описание, номер с «скопировать», влияние/срочность, ИИ целиком + «почему?», история изменений, журнал,
 // действия координатора (только взять/отпустить, передать, эскалировать, комментарий) и ссылка в ITSM.
-import { esc, fmtDateTime, fmtTime, fmtWhen, plural } from "./format.js";
+import { esc, fmtDateTime, fmtTime, fmtWhen, plural, sameCoordinator } from "./format.js";
 import { ownerOf } from "./render.js";
+import { icon } from "./icons.js";
 import { aiEnabled } from "./ai-mode.js";
 import { incidentLabels } from "./incident-labels.js";
 import { bindFeedback, feedbackMarkup, rememberFeedback } from "./ai-feedback.js";
@@ -13,7 +14,8 @@ const RISK_TEXT = { high: "высокий", medium: "средний", low: "ни
 const SOURCE = { rules: "правила по истории инцидентов", gigachat: "GigaChat", cache: "GigaChat (ответ из кэша)" };
 const HIST_LABEL = { priority: "приоритет", team: "команда", assignee: "исполнитель", deadline: "срок", state: "статус", reopen: "возврат в работу" };
 const ACTION_LABEL = { take: "взял в работу", release: "отпустил", assign: "передал", state: "статус", priority: "приоритет",
-  deadline: "срок", comment: "комментарий", escalate: "эскалация", duplicates: "дубли" };
+  deadline: "срок", comment: "комментарий", escalate: "эскалация", escalation_ack: "приём эскалации",
+  outage_add: "расширение сбоя", duplicates: "дубли" };
 
 const why = new Set(); // какие «почему?» раскрыты: `${id}:${функция}` — переживает перерисовку
 const firstName = (s) => (s || "").split(" (")[0];
@@ -28,7 +30,7 @@ function src(meta) {
 function whyBtn(inc, key) {
   return `<button class="btn small btn-ghost why-btn" data-why="${esc(key)}">${why.has(`${inc.id}:${key}`) ? "скрыть" : "почему?"}</button>`;
 }
-const open = (id) => `<span class="linklike" data-open="${esc(id)}">${esc(id)}</span>`;
+const open = (id) => `<button type="button" class="linklike" data-open="${esc(id)}">${esc(id)}</button>`;
 
 function aiSection(inc, snap) {
   const ai = inc.ai || {};
@@ -122,7 +124,10 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
   const same = el.dataset.id === inc.id;
   rememberFeedback(el, same);
   const prevInput = el.querySelector(".comment-form input");
-  const keep = same && prevInput ? { v: prevInput.value, f: document.activeElement === prevInput } : null;
+  const keep = same && prevInput ? {
+    value: prevInput.value, start: prevInput.selectionStart, end: prevInput.selectionEnd, direction: prevInput.selectionDirection,
+  } : null;
+  const focused = same && el.contains(document.activeElement) ? document.activeElement : null;
   const scroll = same ? el.scrollTop : 0;
   el.dataset.id = inc.id;
 
@@ -130,67 +135,86 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
   const useAI = aiEnabled(snap);
   const action = useAI && (snap.actions || []).find((a) => a.incident_id === inc.id);
   const claim = ownerOf(inc, snap);
-  const mine = !!claim && claim.by === handlers.me;
+  const mine = sameCoordinator(claim?.by, handlers.me);
   const alert = claim ? null : (snap.alerts || []).find((a) => a.incident_id === inc.id && !a.taken_by);
   const groups = inc.groups.map((g) => GROUP_SHORT[g] + (inc.resolved_in.includes(g) ? " (решён)" : "")).join(", ") || "не в группах";
   const active = inc.state_kind === "active";
   const canTransfer = inc.state_kind === "active" || inc.state_kind === "research";
   const links = [inc.is_master && "мастер", inc.is_double && "дубль", inc.is_reason && "дочерний", inc.is_effect && "причина других"].filter(Boolean);
   const esc_ = inc.work_log.slice().reverse().find((w) => w.action === "escalate");
+  const receipt = inc.escalation_receipt;
+  const ownEscalation = receipt && sameCoordinator(receipt.by, handlers.me);
+  const awaiting = receipt?.due && !receipt.accepted_at && Date.parse(receipt.due) > nowMs;
   const labels = incidentLabels(inc);
 
   el.innerHTML = `
     <div class="panel-head">
+      <div class="panel-sub"><b class="inc-id">${esc(inc.id)}</b> · ${esc(inc.product || "—")}</div>
+      <button class="btn small drawer-close" data-act="close" aria-label="Закрыть панель" title="Esc">${icon("close")}</button>
+    </div>
+    <h2 tabindex="-1">${esc(inc.title || inc.short_description || inc.id)}</h2>
+    <div class="panel-badges">
       <span class="card-prio prio-${inc.priority_level}">${esc(inc.priority || "")}</span>
       <span class="chip st-${inc.state_kind}">${esc(inc.state || "—")}</span>
       ${esc_ ? `<span class="escalated">⇪ эскалирован ${esc(fmtTime(esc_.at))}</span>` : ""}
-      <button class="btn small drawer-close" data-act="close" title="Esc">✕</button>
     </div>
-    <h2>${esc(inc.product || "—")}</h2>
-    <div class="panel-title">${esc(inc.title)}</div>
-    <div class="panel-sub"><b class="inc-id">${esc(inc.id)}</b> <span class="linklike" data-act="copy-id">скопировать</span> · ${groups}</div>
+    <div class="panel-sub">${groups} · <button type="button" class="linklike" data-act="copy-id">Скопировать номер</button></div>
     ${labels ? `<div class="panel-labels" aria-label="Метки">${labels}</div>` : ""}
 
-    ${alert ? `<div class="panel-alert ${alert.group}">🔔 ${alert.group === "critical" ? "Критический — никто не взял" : "Назначен на координаторов — никто не взял"} <button class="btn small btn-take" data-act="claim">Взять в работу</button></div>` : ""}
-
+    ${alert ? `<p class="panel-alarm ${alert.group}">${alert.group === "critical" ? "Критический · без координатора" : "Назначен на координаторов"}</p>` : ""}
+    <div class="panel-sla corners${active && inc.priority_level === "critical" ? " critical-corners" : ""}">
+      <span>Срок решения · SLA</span>
+      ${active && inc.deadline ? `<strong class="countdown" data-deadline="${esc(inc.deadline)}" data-start="${esc(inc.created_at || "")}" data-fc="${esc(fc ? fc.level : "")}"></strong>
+        <small>До ${esc(fmtDateTime(inc.deadline, nowMs))} МСК</small>
+        ${inc.created_at && Date.parse(inc.deadline) > Date.parse(inc.created_at)
+          ? '<progress class="sla-progress" max="100" value="0" aria-label="Доля прошедшего срока"></progress>' : ""}`
+        : `<strong>${inc.deadline ? esc(fmtDateTime(inc.deadline, nowMs)) : "Срок не задан"}</strong>`}
+    </div>
     <dl class="kv facts">
-      <dt>Срок</dt><dd>${active && inc.deadline ? `<span class="countdown" data-deadline="${esc(inc.deadline)}" data-start="${esc(inc.created_at || "")}" data-fc="${esc(fc ? fc.level : "")}"></span> <small>до ${esc(fmtDateTime(inc.deadline, nowMs))}</small>`
-        : inc.deadline ? esc(fmtDateTime(inc.deadline, nowMs)) : `<span class="dim">срок не задан</span>`}</dd>
+      <dt>Координатор</dt><dd>${claim ? `<b class="owner">в работе: ${esc(claim.by)}</b> · с ${esc(fmtTime(claim.at))}` : "Не назначен"}</dd>
+      <dt>Исполнитель</dt><dd>${esc(inc.team || "—")} / ${inc.assignee ? esc(inc.assignee) : `<span class="dim">сотрудник не назначен</span>`}</dd>
       ${fc ? `<dt>Прогноз</dt><dd><span class="forecast ${fc.level}">${FORECAST_TEXT[fc.level]}</span> <small>прошло ${Math.round(fc.progress * 100)}% срока${fc.eta ? " · решат ~" + esc(fmtWhen(fc.eta, nowMs)) : ""} · ${esc(fc.basis || "")}</small></dd>` : ""}
       <dt>Возник</dt><dd>${esc(fmtDateTime(inc.created_at, nowMs))}</dd>
       ${inc.resolved_at ? `<dt>Решён</dt><dd>${esc(fmtDateTime(inc.resolved_at, nowMs))}</dd>` : ""}
-      <dt>Исполнитель</dt><dd>${esc(inc.team || "—")} / ${inc.assignee ? esc(inc.assignee) : `<span class="dim">сотрудник не назначен</span>`}</dd>
-      <dt>Координатор</dt><dd>${claim ? `<b class="owner">в работе: ${esc(claim.by)}</b> · с ${esc(fmtTime(claim.at))}` : "никто не взял в работу"}</dd>
       <dt>Влияние / срочность</dt><dd>${esc(inc.impact || "—")} / ${esc(inc.urgency || "—")}</dd>
     </dl>
 
+    ${receipt ? `<div class="panel-text"${awaiting ? ` data-escalation-due="${esc(receipt.due)}"` : ""}><b>Эскалация</b> · ${receipt.accepted_at
+      ? `Принял ${esc(receipt.accepted_by)} в ${esc(fmtDateTime(receipt.accepted_at, nowMs))}`
+      : `${Date.parse(receipt.due) <= nowMs ? "Ответ просрочен" : "Ожидает подтверждения"} · до ${esc(fmtDateTime(receipt.due, nowMs))} МСК`}</div>` : ""}
     <div class="drawer-btns">
       ${mine ? `<button class="btn small" data-act="release">Отпустить</button>`
         : claim ? `<button class="btn small" data-act="force" title="Сейчас в работе: ${esc(claim.by)}">Забрать себе</button>`
-        : alert || !active ? "" : `<button class="btn small btn-take" data-act="claim">Взять в работу</button>`}
-      ${canTransfer ? `<button class="btn small btn-primary" data-act="transfer">Передать</button>` : ""}
-      ${active ? `<button class="btn small" data-act="escalate">Эскалировать</button>` : ""}
+        : !active ? "" : `<button class="btn small btn-primary" data-act="claim">Взять в работу</button>`}
+      ${canTransfer ? `<button class="btn small" data-act="transfer">Передать</button>` : ""}
+      ${active && (!receipt || receipt.accepted_at || (ownEscalation && Date.parse(receipt.due) <= nowMs))
+        ? `<button class="btn small" data-act="escalate">Эскалировать</button>` : ""}
+      ${receipt && !ownEscalation && !receipt.accepted_at
+        ? `<button class="btn small btn-primary" data-act="ack-escalation">Подтвердить приём</button>` : ""}
       ${inc.state_kind !== "closed" ? `<button type="button" class="btn small" data-act="change-status" aria-haspopup="dialog">Изменить статус</button>` : ""}
-      <a class="btn small" href="${esc(inc.itsm_url || "#")}" target="_blank" rel="noopener" title="Приоритет и срок можно изменить в ITSM">Открыть в ITSM ↗</a>
+      <a class="btn small" href="${esc(inc.itsm_url || "#")}" target="_blank" rel="noopener" title="Приоритет и срок можно изменить в ITSM">Открыть в ITSM ${icon("external")}</a>
     </div>
-    <form class="comment-form" data-act="comment"><input name="text" placeholder="Комментарий в журнал работ…" autocomplete="off"><button class="btn small">Добавить</button></form>
+    <nav class="panel-sections" aria-label="Разделы инцидента">
+      <button type="button" class="linklike" data-jump="panel-description">Описание</button>
+      <button type="button" class="linklike" data-jump="panel-worklog">Журнал</button>
+    </nav>
+    <h3 id="panel-description" tabindex="-1">Описание</h3><div class="panel-text">${esc(inc.description || inc.short_description || "—")}</div>
+    ${inc.solution && inc.state_kind !== "active" ? `<h3>Решение</h3><div class="panel-text">${esc(inc.solution)}</div>` : ""}
+    <form class="comment-form" data-act="comment"><input name="text" aria-label="Комментарий в журнал работ" placeholder="Комментарий в журнал работ…" autocomplete="off"><button class="btn small">Добавить</button></form>
 
     ${recurrenceSection(inc.recurrence, nowMs, useAI)}
 
     ${useAI ? aiSection(inc, snap) : ""}
 
-    ${action ? `<h3>Черновик ${action.kind === "route" ? "передачи" : "эскалации"} <span class="linklike" data-act="copy">скопировать</span></h3><div class="draft">${esc(action.draft)}</div>` : ""}
+    ${action ? `<h3>Черновик ${action.kind === "route" ? "передачи" : "эскалации"} <button type="button" class="linklike" data-act="copy">скопировать</button></h3><div class="draft">${esc(action.draft)}</div>` : ""}
 
     <h3>История изменений</h3>
     ${historyHtml(history, nowMs)}
 
-    <h3>Журнал работ</h3>
+    <h3 id="panel-worklog" tabindex="-1">Журнал работ</h3>
     ${inc.work_log.length ? `<div class="worklog">${inc.work_log.slice().reverse().map((w) => `
       <div class="wl"><span>${esc(fmtDateTime(w.at, nowMs))}</span><b>${esc(w.author || "")}</b>${w.action && ACTION_LABEL[w.action] ? ` <small>${ACTION_LABEL[w.action]}</small>` : ""}<div>${esc(w.text || "")}</div></div>`).join("")}</div>`
       : `<div class="pop-empty">записей нет</div>`}
-
-    <h3>Описание</h3><div class="panel-text">${esc(inc.description || inc.short_description || "—")}</div>
-    ${inc.solution && inc.state_kind !== "active" ? `<h3>Решение</h3><div class="panel-text">${esc(inc.solution)}</div>` : ""}
 
     <h3>Карточка</h3>
     <dl class="kv">
@@ -204,11 +228,21 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
 
   const on = (sel, fn) => el.querySelectorAll(sel).forEach((b) => (b.onclick = fn));
   on("[data-act=close]", handlers.close);
+  on("[data-jump]", (event) => {
+    const heading = document.getElementById(event.currentTarget.dataset.jump);
+    heading.focus({ preventScroll: true });
+    heading.scrollIntoView({ block: "start" });
+  });
   on("[data-act=claim]", () => handlers.claim(inc.id));
   on("[data-act=force]", () => handlers.claim(inc.id, true, inc.hash));
   on("[data-act=release]", () => handlers.release(inc.id));
   on("[data-act=transfer]", () => handlers.transfer(inc.id));
   on("[data-act=escalate]", () => handlers.escalate(inc.id, action && action.kind === "escalate" ? action.draft : null));
+  on("[data-act=ack-escalation]", (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    handlers.acknowledgeEscalation(inc).finally(() => { button.disabled = false; });
+  });
   on("[data-act=change-status]", () => handlers.changeStatus(inc));
   on("[data-act=copy]", (e) => handlers.copy(action.draft, e.target));
   on("[data-act=copy-id]", (e) => handlers.copy(inc.id, e.target));
@@ -225,7 +259,22 @@ export function renderPanel(inc, snap, nowMs, handlers, history) {
     const t = form.text.value.trim();
     if (t) { handlers.comment(inc.id, t); form.text.value = ""; }
   };
-  if (keep) { form.text.value = keep.v; if (keep.f) form.text.focus(); }
+  if (keep) {
+    form.text.value = keep.value;
+    form.text.setSelectionRange(keep.start, keep.end, keep.direction);
+  }
   bindFeedback(el, inc);
+  if (focused) {
+    const match = [...el.querySelectorAll("button:enabled, a[href], input, select, textarea, summary, [tabindex]")]
+      .find((node) => node.tagName === focused.tagName
+        && node.name === focused.name
+        && node.dataset.act === focused.dataset.act
+        && node.dataset.why === focused.dataset.why
+        && node.dataset.open === focused.dataset.open
+        && node.dataset.jump === focused.dataset.jump
+        && node.getAttribute("href") === focused.getAttribute("href")
+        && (node.dataset.act || node.dataset.why || node.textContent === focused.textContent));
+    (match || el.querySelector("h2")).focus({ preventScroll: true });
+  }
   el.scrollTop = scroll;
 }

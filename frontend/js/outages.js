@@ -4,6 +4,17 @@ import { esc, plural } from "./format.js";
 
 const SOURCES = { rules: "Правила сопоставления", gigachat: "GigaChat", cache: "GigaChat (кэш)" };
 const countLabel = (n) => `${n} ${plural(n, "инцидент", "инцидента", "инцидентов")}`;
+function growthBadge(outage) {
+  if (outage.status !== "active" || !outage.last_growth_at) return "";
+  return `<strong class="outage-alarm-label" data-outage-growth="${esc(outage.last_growth_at)}" hidden>Разрастается</strong>`;
+}
+
+export function tickOutageGrowth(now) {
+  for (const badge of document.querySelectorAll("[data-outage-growth]")) {
+    const elapsed = now - Date.parse(badge.dataset.outageGrowth);
+    badge.hidden = !(elapsed >= 0 && elapsed < 15 * 60 * 1000);
+  }
+}
 
 function deadline(outage) {
   if (outage.status === "resolved") return `<span class="outage-resolved">Решён</span>`;
@@ -32,12 +43,12 @@ export function renderWallOutages(el, snap, alarmIds) {
     <div class="wall-outages-grid">${entries.slice(0, 4).map(({ outage, alarm }) => `
       <article class="wall-outage${outage.status === "resolved" ? " resolved" : ""}${alarm ? " critical" : ""}">
         <strong title="${esc(outageTitle(outage, aiEnabled(snap)))}">${esc(outageTitle(outage, aiEnabled(snap)))}</strong>
-        <div class="wall-outage-meta"><span>${countLabel(outage.incident_ids.length)} · ${outage.products.length} ${plural(outage.products.length, "продукт", "продукта", "продуктов")}</span>
-          ${deadline(outage)}</div>
+        <div class="wall-outage-meta"><span title="${esc(outage.products.join(", "))}">${countLabel(outage.incident_ids.length)} · ${outage.products.length} ${plural(outage.products.length, "продукт", "продукта", "продуктов")}</span>
+          ${deadline(outage)}</div>${growthBadge(outage)}
       </article>`).join("")}</div>`;
 }
 
-export function mountOutages(el, { open, refresh, needName, toast }) {
+export function mountOutages(el, { open, refresh, toast }) {
   const list = el.querySelector("#outage-list");
   const status = el.querySelector("#outage-status");
   status.tabIndex = -1;
@@ -52,19 +63,41 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
 
   function members(outage, detail, candidate) {
     const ids = detail?.outage?.incident_ids || outage.incident_ids;
-    const rows = ids.map((id) => ({ id, inc: detail.incidents.get(id) || snap.incidents[id] }));
+    const rows = ids.map((id) => ({
+      id, inc: snap.incidents[id] || detail.full?.get(id) || detail.incidents.get(id),
+    }));
+    const deadlineOf = ({ inc }) => Date.parse(inc?.deadline) || Infinity;
+    rows.sort((a, b) => deadlineOf(a) - deadlineOf(b));
+    const products = new Map();
+    for (const { inc } of rows) {
+      const product = inc?.product || "Продукт не указан";
+      products.set(product, (products.get(product) || 0) + 1);
+    }
     const included = new Set(ids);
     const parents = new Set(rows.map(({ inc }) => inc?.cause_incident_id).filter((id) => included.has(id)));
-    return `<ul class="outage-members">${rows.map(({ id, inc }) => {
-      const label = inc && [inc.product, inc.title].filter(Boolean).join(" · ");
-      const cause = inc?.cause_incident_id;
-      const relation = included.has(cause) ? `Следствие ${cause}` : parents.has(id) ? "Причина цепочки" : "";
-      const canExclude = candidate || detail.incidents.has(id);
-      const disabled = busy || refreshRequired ? " disabled" : "";
-      return `<li${canExclude ? ' class="action-btns"' : ""}><button type="button" class="outage-member" data-incident="${esc(id)}"><b>${esc(id)}</b>
-        ${label || relation ? `<span>${esc([relation, label].filter(Boolean).join(" · "))}</span>` : ""}</button>
-        ${canExclude ? `<button type="button" class="btn small" data-exclude="${esc(id)}" aria-label="Исключить ${esc(id)} ${candidate ? "из предложения" : "из сбоя"}"${disabled}>Исключить</button>` : ""}</li>`;
-    }).join("")}</ul>`;
+    const ranked = [...products].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "ru"));
+    return `<div class="outage-composition">
+      <section class="outage-products" aria-label="Состав по продуктам">
+        <h4>По продуктам</h4>
+        <ul>${ranked.map(([product, count]) => `<li>${esc(product)} <b>${count}</b></li>`).join("")}</ul>
+      </section>
+      <ul class="outage-members" aria-label="Состав сбоя">${rows.map(({ id, inc }) => {
+        const cause = inc?.cause_incident_id;
+        const relation = included.has(cause) ? `Следствие ${cause}` : parents.has(id) ? "Причина цепочки" : "";
+        const canExclude = candidate || detail.incidents.has(id);
+        const disabled = busy || refreshRequired ? " disabled" : "";
+        return `<li class="outage-member-row">
+          <button type="button" class="outage-member" data-incident="${esc(id)}">
+            <b>${esc(id)}</b><span>${esc(inc?.product || "—")}</span>
+            <strong>${esc(inc?.title || "Открыть инцидент")}</strong>
+            ${relation ? `<small>${esc(relation)}</small>` : ""}
+          </button>
+          <span class="outage-member-sla">${inc?.deadline ? `<span class="alert-time" data-deadline="${esc(inc.deadline)}"></span>`
+            : inc && Object.hasOwn(inc, "deadline") ? "Срок не задан" : "Срок недоступен"}</span>
+          ${canExclude ? `<button type="button" class="btn small" data-exclude="${esc(id)}" aria-label="Исключить ${esc(id)} ${candidate ? "из предложения" : "из сбоя"}"${disabled}>Исключить</button>` : ""}
+        </li>`;
+      }).join("")}</ul>
+    </div>`;
   }
 
   function card(outage, candidate) {
@@ -77,15 +110,45 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
     const hideModelText = modelOutage(outage, useAI);
     const source = hideModelText ? null : SOURCES[outage.source];
     const key = `${candidate ? "candidate" : "confirmed"}:${outage.id}`;
-    return `<article class="outage-card" data-id="${esc(outage.id)}" data-kind="${candidate ? "candidate" : "confirmed"}">
+    return `<article class="outage-card corners" data-id="${esc(outage.id)}" data-kind="${candidate ? "candidate" : "confirmed"}">
       <div class="outage-card-head"><h3>${esc(outageTitle(outage, useAI))}</h3><div class="outage-deadline">${deadline(outage)}</div></div>
       <div class="outage-description">${countLabel(outage.incident_ids.length)}${outage.products.length ? ` · ${esc(outage.products.join(", "))}` : ""}</div>
+      ${growthBadge(outage)}
       ${!hideModelText && outage.reason ? `<p>${esc(outage.reason)}</p>` : ""}
-      ${source ? `<div class="outage-description">Источник · ${source}</div>` : ""}
+      ${source ? `<div class="outage-description">Основание · ${source}</div>` : ""}
       <details data-key="${esc(key)}"><summary>Состав · ${detail?.outage?.incident_ids.length ?? outage.incident_ids.length}</summary>${composition}
-        ${!candidate && detail?.outage?.status === "active" ? outageControls() : ""}</details>
+        ${!candidate && detail?.outage?.status === "active" ? growthList(detail.outage.growth_proposals) + outageControls() : ""}</details>
       ${candidate ? `<button class="btn btn-primary small" data-confirm${busy || refreshRequired ? " disabled" : ""}>Да, это один сбой</button>` : ""}
     </article>`;
+  }
+
+  function growthList(proposals) {
+    if (!proposals?.length) return "";
+    return `<section class="outage-growth"><h4>Новые связанные заявки</h4><ul class="outage-members">
+      ${proposals.map((inc) => `<li class="outage-member-row">
+        <button type="button" class="outage-member" data-incident="${esc(inc.id)}"><b>${esc(inc.id)}</b>
+          <span>${esc(inc.product || "—")}</span><strong>${esc(inc.title || "Открыть инцидент")}</strong>
+          <small>${esc(inc.reason)}</small></button>
+        <button type="button" class="btn small" data-add="${esc(inc.id)}"${busy || refreshRequired ? " disabled" : ""}>Добавить в сбой</button>
+      </li>`).join("")}</ul></section>`;
+  }
+
+  async function addMember(id, incidentId) {
+    if (busy || refreshRequired) return;
+    const outage = details.get(id)?.outage;
+    const proposal = outage?.growth_proposals?.find((inc) => inc.id === incidentId);
+    if (!proposal) return;
+    busy = true;
+    paint();
+    try {
+      await api.addOutageMember(id, incidentId, proposal.hash, outage.incident_ids);
+      snapshotMessage = `${incidentId} добавлен в сбой.`;
+    } catch (error) {
+      if (error.status !== 409) { busy = false; status.textContent = error.message; paint(); return; }
+      snapshotMessage = error.message;
+    }
+    details.delete(id);
+    await refreshSnapshot();
   }
 
   function outageControls() {
@@ -133,7 +196,15 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
     paint();
     try {
       const outage = await (candidate ? api.outageCandidate(id) : api.outage(id));
+      if (details.get(id) !== entry) return;
       entry.incidents = new Map(outage.incidents.map((inc) => [inc.id, inc]));
+      entry.full = new Map();
+      // Предложения возвращают краткий состав. Полные записи уже есть в снимке рабочих групп.
+      const missing = outage.incident_ids.filter((key) => !snap.incidents[key] && !Object.hasOwn(entry.incidents.get(key) || {}, "deadline"));
+      await Promise.all(missing.map(async (key) => {
+        try { entry.full.set(key, await api.incident(key)); }
+        catch { /* запись вне снимка может пропасть, пока состав открыт */ }
+      }));
       entry.outage = outage;
     } catch (e) {
       entry.error = `Не удалось загрузить состав. ${e.message}`;
@@ -155,7 +226,7 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
   }
 
   async function confirmCandidate(id) {
-    if (busy || refreshRequired || !snap.outage_candidates?.some((candidate) => candidate.id === id) || needName()) return;
+    if (busy || refreshRequired || !snap.outage_candidates?.some((candidate) => candidate.id === id)) return;
     busy = true;
     status.textContent = "Подтверждаем сбой…";
     paint();
@@ -175,7 +246,7 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
   }
 
   async function actOnOutage(id, operation, team) {
-    if (busy || refreshRequired || needName()) return;
+    if (busy || refreshRequired) return;
     const detail = details.get(id);
     if (!detail?.outage || detail.outage.status !== "active") return;
     if (operation === "assign" && !team) { status.textContent = "Сначала выберите команду."; return; }
@@ -198,7 +269,7 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
   }
 
   async function excludeMember(id, incidentId) {
-    if (busy || refreshRequired || needName()) return;
+    if (busy || refreshRequired) return;
     const detail = details.get(id);
     const member = detail?.incidents.get(incidentId);
     if (!member) return;
@@ -229,7 +300,7 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
   }
 
   async function excludeCandidateMember(id, incidentId) {
-    if (busy || refreshRequired || needName()) return;
+    if (busy || refreshRequired) return;
     if (!window.confirm(`Исключить ${incidentId} из предложения? Это изменит состав для всех координаторов.`)) return;
     busy = true;
     status.textContent = `Исключаем ${incidentId} из предложения…`;
@@ -275,6 +346,7 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
     const { id, kind } = button.closest("[data-kind]").dataset;
     const isCandidate = kind === "candidate";
     if (button.hasAttribute("data-confirm")) { confirmCandidate(id); return; }
+    if (button.dataset.add) { addMember(id, button.dataset.add); return; }
     if (button.dataset.exclude) {
       if (isCandidate) excludeCandidateMember(id, button.dataset.exclude);
       else excludeMember(id, button.dataset.exclude);
@@ -298,9 +370,10 @@ export function mountOutages(el, { open, refresh, needName, toast }) {
 
   function render(next) {
     if (snap !== next) {
-      const old = new Map((snap?.outages || []).map((outage) => [outage.id, JSON.stringify(outage.incident_ids)]));
+      const old = new Map((snap?.outages || []).map((outage) => [outage.id, JSON.stringify(outage)]));
+      const recordsChanged = snap?.file?.last_change_at !== next.file?.last_change_at;
       for (const outage of next.outages || []) {
-        if (old.get(outage.id) !== JSON.stringify(outage.incident_ids)) details.delete(outage.id);
+        if (recordsChanged || old.get(outage.id) !== JSON.stringify(outage)) details.delete(outage.id);
         old.delete(outage.id);
       }
       for (const id of old.keys()) details.delete(id);

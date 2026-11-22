@@ -3,7 +3,7 @@
 // (кнопки «Принял» нет — decisions.md, п. 4; «в работе у …» — поле coordinator в файле).
 // Здесь — только звук, голос и системные уведомления (лестница эскалации).
 import { playCritical, playCoordinators, playResolved, playTick, speak } from "./sound.js";
-import { speakLeft, plural } from "./format.js";
+import { speakLeft, plural, sameCoordinator } from "./format.js";
 import { aiEnabled } from "./ai-mode.js";
 
 const MIN = 60_000;
@@ -44,15 +44,15 @@ export function processEvents(snap, opts) {
     if (e.type === "critical_resolved") {
       playResolved();
       speak(`Критический инцидент решён. ${e.product || ""}`, { delay: 700 });
-      opts.toast(`✅ Критический решён: ${e.product || ""} · ${e.title || ""}${e.by ? " · " + e.by.split(" (")[0] : ""}`, "green");
+      opts.toast(`Критический решён: ${e.product || ""} · ${e.title || ""}${e.by ? " · " + e.by.split(" (")[0] : ""}`, "green");
       opts.notify("Критический инцидент решён", `${e.product || ""} · ${e.title || ""}`, e.incident_id, false);
     } else if (e.type === "became_critical") {
       const owner = ownerName(snap.incidents[e.incident_id]);
       if (!owner) continue; // не взят — громкая тревога придёт через alerts
-      if (opts.me && owner === opts.me) {
+      if (sameCoordinator(owner, opts.me)) {
         playCritical(true);
         speak(`Внимание! Ваш инцидент стал критическим. ${e.product || ""}. ${e.title || ""}.`, { delay: 1400, urgent: true });
-        opts.toast(`🔴 Ваш инцидент стал критическим: ${e.product || ""} · ${e.title || ""}`, "bad");
+        opts.toast(`Ваш инцидент стал критическим: ${e.product || ""} · ${e.title || ""}`, "bad");
         opts.notify("Ваш инцидент стал КРИТИЧЕСКИМ", `${e.product || ""} · ${e.title || ""}`, e.incident_id, true);
       } else {
         opts.toast(`Стал критическим (в работе: ${owner}): ${e.product || ""} · ${e.title || ""}`);
@@ -139,7 +139,7 @@ export function ring(allAlerts, nowMs, opts = {}) {
   if (fresh.length > BATCH) {
     const n = fresh.length;
     if (opts.notify) opts.notify(`${n} ${plural(n, "новая тревога", "новые тревоги", "новых тревог")}`, summaryFor(fresh), fresh[0].inc.id, fresh.some((a) => a.group === "critical"));
-    if (opts.toast) opts.toast(`🔔 ${n} ${plural(n, "новая тревога", "новые тревоги", "новых тревог")}`, "bad");
+    if (opts.toast) opts.toast(`${n} ${plural(n, "новая тревога", "новые тревоги", "новых тревог")}`, "bad");
   } else if (opts.notify) {
     for (const a of fresh) {
       const title = a.group === "critical" ? "КРИТИЧЕСКИЙ инцидент" : "Назначен на координаторов";
@@ -162,7 +162,7 @@ export function watchOverdue(snap, nowMs, opts) {
     overdueSeen.add(inc.id);
     if (!overdueReady || nowMs - Date.parse(inc.deadline) > 2 * MIN) continue; // старые просрочки не озвучиваем
     playTick();
-    opts.toast(`⏰ Срок критического нарушен: ${inc.product || ""} · ${inc.title || ""}`, "bad");
+    opts.toast(`Срок критического нарушен: ${inc.product || ""} · ${inc.title || ""}`, "bad");
   }
   overdueReady = true;
 }

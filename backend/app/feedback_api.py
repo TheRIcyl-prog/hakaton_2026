@@ -5,10 +5,10 @@ from pydantic import BaseModel, Field
 
 from . import ai
 from .adapter import norm_team
+from .auth import CurrentProfile
 
 
 class FeedbackBody(BaseModel):
-    by: str = Field(min_length=1, max_length=100)
     kind: Literal["route", "summary", "risk", "dynamics"]
     corrected_team: str | None = Field(default=None, max_length=200)
     expected_team: str | None = Field(default=None, max_length=200)
@@ -19,7 +19,7 @@ def feedback_router(get_incident: Callable, get_teams: Callable, coordinators_te
     router = APIRouter()
 
     @router.post("/api/incidents/{inc_id}/ai-feedback")
-    def record(inc_id: str, body: FeedbackBody):
+    def record(inc_id: str, body: FeedbackBody, profile: CurrentProfile):
         incident = get_incident(inc_id)
         if incident is None:
             raise HTTPException(404, "инцидент не найден")
@@ -36,7 +36,7 @@ def feedback_router(get_incident: Callable, get_teams: Callable, coordinators_te
                 raise HTTPException(400, "выберите существующую команду-исполнителя")
             team = teams[key]
         try:
-            saved = ai.record_feedback(incident, body.by, body.kind, team)
+            saved = ai.record_feedback(incident, profile.display_name, body.kind, team)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         except OSError as e:

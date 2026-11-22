@@ -31,7 +31,7 @@ def _write(path, data):
 @pytest.mark.parametrize("provider", ["off", "rules"])
 def test_5000_edit_to_snapshot_under_1s(tmp_path, rules, monkeypatch, provider):
     monkeypatch.setenv("LLM_PROVIDER", provider)
-    ai.setup(feedback_path=tmp_path / "feedback.json")
+    ai.setup(cache_dir=tmp_path)
     data = make_demo.build(datetime.now(timezone.utc).replace(microsecond=0), N)
     f = tmp_path / "incidents.json"
     _write(f, data)

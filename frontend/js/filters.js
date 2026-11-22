@@ -2,8 +2,9 @@
 // Выбор запоминается на каждом АРМ. На стене фильтров нет — она всегда показывает всё.
 // Колонки фильтруются в браузере (в снимке все инциденты групп), а «всего по фильтру» и список
 // по всем тысячам — сервер (GET /api/search, параметры — toParams).
-import { esc } from "./format.js";
+import { esc, sameCoordinator } from "./format.js";
 import { aiEnabled } from "./ai-mode.js";
+import { icon } from "./icons.js";
 
 const KEY = "mi-dashboard:filters";
 const HOUR = 3600_000;
@@ -16,7 +17,7 @@ const EMPTY = {
 
 // Переключатели: подпись чипа и проверка. ctx = {snap, now, me, unacked:Set}
 const TOGGLES = {
-  mine: { label: "Мои", hint: "в работе у меня", test: (inc, c) => !!c.me && claimBy(c, inc) === c.me },
+  mine: { label: "Мои", hint: "в работе у меня", test: (inc, c) => sameCoordinator(claimBy(c, inc), c.me) },
   overdue: { label: "Просроченные", hint: "срок уже нарушен", test: (inc, c) => isActive(inc) && inc.deadline && Date.parse(inc.deadline) < c.now },
   burning: { label: "Горит срок", hint: "прогноз: не успеют", test: (inc) => isActive(inc) && inc.forecast && ["breach", "overdue"].includes(inc.forecast.level) },
   unacked: { label: "Не взятые в работу", hint: "тревога, и никто не взял в работу", test: (inc, c) => c.unacked.has(inc.id), more: true },
@@ -112,14 +113,13 @@ export function mountFilters(el, handlers) {
   onChange = handlers.change;
   listHandlers = handlers;
   el.innerHTML = `
-    <span class="fl-title">Фильтры</span>
-    <select class="fl-select" data-f="product" title="Продукт"></select>
-    <select class="fl-select" data-f="team" title="Команда"></select>
-    <select class="fl-select" data-f="person" title="В работе у координатора или исполнитель"></select>
+    <select class="fl-select" data-f="product" title="Продукт" aria-label="Продукт"></select>
+    <select class="fl-select" data-f="team" title="Команда" aria-label="Команда"></select>
+    <select class="fl-select" data-f="person" title="В работе у координатора или исполнитель" aria-label="Координатор или исполнитель"></select>
     ${Object.entries(TOGGLES).filter(([, t]) => !t.more).map(([k, t]) => `<button class="fl-chip" data-t="${k}" title="${esc(t.hint)}">${esc(t.label)}</button>`).join("")}
     <div class="fl-more">
-      <button class="fl-chip" data-act="more">Ещё ▾</button>
-      <div class="fl-menu hidden">
+      <button type="button" class="fl-chip" data-act="more" aria-expanded="false" aria-controls="filter-options">Фильтры ▾</button>
+      <div class="fl-menu hidden" id="filter-options">
         ${Object.entries(TOGGLES).filter(([, t]) => t.more).map(([k, t]) => `<label data-filter="${k}"><input type="checkbox" data-t="${k}"> ${esc(t.label)} <small>${esc(t.hint)}</small></label>`).join("")}
         <div class="fl-menu-sep">Тип сервиса</div>
         <label><input type="radio" name="stype" value=""> все</label>
@@ -136,9 +136,20 @@ export function mountFilters(el, handlers) {
   el.querySelectorAll(".fl-menu input[data-t]").forEach((i) => (i.onchange = () => set(i.dataset.t, i.checked)));
   el.querySelectorAll(".fl-menu input[name=stype]").forEach((i) => (i.onchange = () => set("stype", i.value)));
   const menu = el.querySelector(".fl-menu");
-  el.querySelector("[data-act=more]").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("hidden"); };
-  menu.onclick = (e) => e.stopPropagation();
-  document.addEventListener("click", () => menu.classList.add("hidden"));
+  const toggle = el.querySelector("[data-act=more]");
+  function showFilters(open) {
+    menu.classList.toggle("hidden", !open);
+    toggle.setAttribute("aria-expanded", String(open));
+  }
+  toggle.onclick = (event) => { event.stopPropagation(); showFilters(menu.classList.contains("hidden")); };
+  menu.onclick = (event) => event.stopPropagation();
+  el.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || menu.classList.contains("hidden")) return;
+    event.stopPropagation();
+    showFilters(false);
+    toggle.focus();
+  });
+  document.addEventListener("click", () => showFilters(false));
   el.querySelector("[data-act=reset]").onclick = () => { f = { ...EMPTY }; save(); onChange(); };
 }
 
@@ -182,16 +193,16 @@ export function renderFilters(el, snap, shown, total, serverTotal) {
   const extra = Object.entries(TOGGLES).filter(([k, t]) => t.more && f[k] && (k !== "risk" || allowAI)).map(([k, t]) => [k, t.label]);
   if (f.stype) extra.push(["stype", f.stype === "client" ? "Клиентские" : "Внутренние"]);
   const box = el.querySelector(".fl-extra");
-  box.innerHTML = extra.map(([k, l]) => `<button class="fl-chip active" data-x="${k}" title="убрать">${esc(l)} ✕</button>`).join("");
+  box.innerHTML = extra.map(([k, l]) => `<button class="fl-chip active" data-x="${k}" title="убрать">${esc(l)} ${icon("close")}</button>`).join("");
   box.querySelectorAll("[data-x]").forEach((b) => (b.onclick = () => set(b.dataset.x, b.dataset.x === "stype" ? "" : false)));
 
   const active = isActiveFilter();
   const cnt = el.querySelector(".fl-count");
   const outside = snap.outside_active || 0;
   cnt.innerHTML = active
-    ? `в группах <b>${shown}</b> из ${total} · <span class="linklike" data-list="all">всего по фильтру ${serverTotal == null ? "…" : serverTotal} ›</span>`
-    : `${total} в группах${outside ? ` · <span class="linklike" data-list="outside" title="средние и низкие — через поиск и фильтры">ещё ${outside} активных вне групп ›</span>` : ""}`;
-  cnt.querySelectorAll("[data-list]").forEach((s) => (s.onclick = () => listHandlers[s.dataset.list] && listHandlers[s.dataset.list]()));
+    ? `в группах <b>${shown}</b> из ${total} · <button type="button" class="linklike" data-list="all">всего по фильтру ${serverTotal == null ? "…" : serverTotal} ›</button>`
+    : `${total} в группах${outside ? ` · <button type="button" class="linklike" data-list="outside">ещё ${outside} активных вне групп ›</button>` : ""}`;
+  cnt.querySelectorAll("[data-list]").forEach((button) => (button.onclick = () => listHandlers[button.dataset.list]?.()));
   el.querySelector(".fl-reset").classList.toggle("hidden", !active);
   el.classList.toggle("filtering", active);
 }

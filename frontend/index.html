@@ -5,59 +5,95 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>АРМ координатора МИ · МТС</title>
   <link rel="icon" id="favicon" href="data:,">
+  <script src="/js/theme.js"></script>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body class="arm">
+  <div id="arm-session" class="session-content" hidden inert>
   <header class="topbar" id="topbar">
     <div class="brand">
-      <div class="brand-mark">МТС</div>
-      <div class="brand-title">АРМ координатора</div>
+      <img class="arm-brand-mark" src="/mts-mark.svg" alt="МТС" width="36" height="36">
+      <div class="brand-title">АРМ координатора<br><span>Мониторинг массовых инцидентов</span></div>
     </div>
-    <nav class="counters" id="counters"></nav>
     <div class="topbar-right">
-      <input id="search" class="search" type="search" placeholder="Поиск  ( / )" autocomplete="off" title="Номер, продукт, команда, сотрудник, координатор, текст — по всем инцидентам">
+      <input id="search" class="search" type="search" aria-label="Поиск по инцидентам" placeholder="Поиск по инцидентам  ( / )" autocomplete="off" title="Номер, продукт, команда, сотрудник, координатор, текст — по всем инцидентам">
       <button class="icon-btn" id="sound-btn"></button>
       <button class="icon-btn" id="voice-btn"></button>
-      <div class="clock" id="clock"></div>
-      <div class="status" id="status"></div>
+      <button type="button" class="icon-btn" data-theme-toggle aria-label="Тёмная тема" aria-pressed="false" title="Переключить тему">
+        <svg class="ui-icon theme-moon" aria-hidden="true" focusable="false"><use href="/icons.svg#moon"></use></svg>
+        <svg class="ui-icon theme-sun" aria-hidden="true" focusable="false"><use href="/icons.svg#sun"></use></svg>
+      </button>
       <div class="menu-wrap">
-        <button class="icon-btn" id="me" title="Сменить имя"></button>
-        <button class="icon-btn" id="menu-btn" aria-label="Ещё" aria-expanded="false" aria-controls="menu-pop" title="Ещё">⋯</button>
+        <button class="icon-btn" id="me" aria-expanded="false" aria-controls="menu-pop" title="Меню профиля">
+          <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#user"></use></svg><span id="me-label"></span>
+        </button>
+        <button class="icon-btn" id="menu-btn" aria-label="Ещё" aria-expanded="false" aria-controls="menu-pop" title="Ещё">
+          <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#more"></use></svg>
+        </button>
         <div class="popover menu-pop hidden" id="menu-pop">
-          <a href="/wall" target="_blank">🖥 Открыть видеостену</a>
+          <a href="/wall" target="_blank"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#monitor"></use></svg> Открыть видеостену</a>
           <button type="button" id="card-settings-btn" aria-haspopup="dialog">Поля карточек</button>
           <button type="button" id="column-settings-btn" aria-haspopup="dialog">Колонки АРМ</button>
-          <button id="export-btn">⭳ Экспорт файла инцидентов</button>
-          <button id="import-btn">⭱ Импорт файла инцидентов</button>
+          <button id="export-btn"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#download"></use></svg> Экспорт файла инцидентов</button>
+          <button id="import-btn"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#upload"></use></svg> Импорт файла инцидентов</button>
+          <button type="button" id="notifications-btn">Включить уведомления</button>
+          <button type="button" id="logout-btn">Выйти</button>
+          <span class="logout-message" id="logout-message" role="status"></span>
           <input type="file" id="import-input" accept=".json,application/json" hidden>
         </div>
       </div>
     </div>
   </header>
 
-  <div id="filebar" class="filebar hidden"></div>
-  <section id="alerts" class="alerts"></section>
-
   <section class="toolbar">
-    <div class="tabs">
+    <nav class="tabs" aria-label="Разделы АРМ">
       <button class="tab active" data-view="queue">Очередь <b id="queue-count"></b></button>
       <button class="tab" data-view="board">Группы</button>
       <button class="tab" data-view="outages">Сбои</button>
+      <button class="tab" data-view="handoff">Передача смены</button>
       <button class="tab" data-view="mine">Мои <b id="mine-count" class="soft"></b></button>
       <button class="tab" data-view="feed">Лента <b id="feed-count"></b></button>
-    </div>
-    <div class="filters" id="filters"></div>
+      <button class="tab" data-view="recent">Недавно закрытые</button>
+    </nav>
+    <div class="snapshot-state"><div class="status" id="status"></div><div class="clock" id="clock"></div></div>
   </section>
 
-  <div class="workspace" id="workspace">
+  <div id="filebar" class="filebar hidden"></div>
+  <section class="arm-overview" aria-labelledby="view-title">
+    <h1 id="view-title">Очередь координатора</h1>
+    <nav class="counters corners" id="counters" aria-label="Сводка по группам"></nav>
+  </section>
+  <section id="alerts" class="alerts"></section>
+  <div class="view-controls">
+    <div class="filters" id="filters"></div>
+    <button type="button" class="btn" id="load-map-toggle" aria-expanded="false" aria-controls="load-map" hidden>Карта нагрузки</button>
+  </div>
+
+  <div class="workspace" id="workspace" data-view="queue">
     <main class="board hidden" id="board"></main>
+    <section class="load-map corners hidden" id="load-map" aria-label="Карта нагрузки"></section>
     <section class="personal-queue" id="queue" aria-label="Очередь координатора">
       <div class="queue-feedback" hidden>
         <span id="queue-status" role="status"></span>
         <button type="button" class="btn small" id="queue-retry" hidden>Обновить</button>
       </div>
-      <button type="button" class="btn small" id="queue-reminders" aria-expanded="false" aria-controls="queue-items" hidden></button>
-      <div class="queue" id="queue-items"></div>
+      <div class="queue-controls">
+        <select id="queue-priority" class="fl-select" aria-label="Приоритет задач">
+          <option value="">Все приоритеты</option>
+          <option value="critical">Критические</option>
+          <option value="high">Высокие</option>
+          <option value="medium">Средние</option>
+          <option value="low">Низкие</option>
+        </select>
+      </div>
+      <div class="queue-table corners">
+        <div class="queue-columns" aria-hidden="true"><span>Приоритет</span><span>Инцидент / задача</span><span>Координатор</span><span>Срок</span><span>Действие</span></div>
+        <div class="queue" id="queue-items"></div>
+        <div class="queue-footer">
+          <span id="queue-total"></span>
+          <button type="button" class="btn small" id="queue-reminders" aria-expanded="false" aria-controls="queue-items" hidden></button>
+        </div>
+      </div>
     </section>
     <section class="outages-view hidden" id="outages" aria-label="Сбои">
       <div class="outage-feedback">
@@ -68,22 +104,60 @@
     </section>
     <section class="board hidden" id="mine" aria-label="Мои инциденты"></section>
     <section class="feedview hidden" id="feedview"></section>
+    <section class="outages-view hidden" id="handoff" aria-label="Передача смены">
+      <article class="outage-card corners">
+        <h2>Передать смену</h2>
+        <form id="handoff-form" class="handoff-form">
+          <label>Кому передать <select class="select" name="recipient" required disabled>
+            <option value="">Выберите координатора</option>
+          </select></label>
+          <label>Следующий шаг <textarea name="note" required maxlength="1000" rows="3"></textarea></label>
+          <details data-handoff-preview><summary>Сводка смены</summary><div></div></details>
+          <button type="submit" class="btn btn-primary" disabled>Передать смену</button>
+        </form>
+      </article>
+      <p id="handoff-status" role="status"></p>
+      <div id="handoff-items"></div>
+    </section>
+    <section class="outages-view recent-view hidden" id="recent" aria-label="Недавно закрытые">
+      <div class="recent-controls">
+        <div role="group" aria-label="Тип записей">
+          <button type="button" class="btn active" data-recent-kind="incidents" aria-pressed="true">Инциденты</button>
+          <button type="button" class="btn" data-recent-kind="outages" aria-pressed="false">Сбои</button>
+        </div>
+        <span>За последние 3 часа · МСК</span>
+      </div>
+      <p class="recent-status" role="status"></p>
+      <div class="recent-list"></div>
+      <nav class="recent-pages" aria-label="Страницы закрытых записей" hidden>
+        <button type="button" class="btn" data-recent-page="previous_offset">Назад</button>
+        <button type="button" class="btn" data-recent-page="next_offset">Дальше</button>
+      </nav>
+    </section>
     <section class="results hidden" id="results"></section>
-    <aside class="panel hidden" id="drawer"></aside>
+    <aside class="panel corners hidden" id="drawer" aria-label="Панель инцидента"></aside>
   </div>
 
   <div class="modal hidden" id="modal"></div>
-  <dialog class="card-settings" id="card-settings" aria-labelledby="card-settings-title">
+  <dialog class="card-settings corners" id="card-settings" aria-labelledby="card-settings-title">
     <h2 id="card-settings-title">Поля карточек</h2>
-    <p id="card-settings-profile"></p>
-    <p>Номер, заголовок, приоритет и действия видны всегда.</p>
-    <fieldset><legend>Дополнительные поля</legend><div id="card-settings-fields"></div></fieldset>
+    <div class="settings-layout">
+      <div>
+        <p id="card-settings-profile"></p>
+        <p>Номер, заголовок, приоритет и действия видны всегда.</p>
+        <fieldset><legend>Дополнительные поля</legend><div id="card-settings-fields"></div></fieldset>
+      </div>
+      <div class="settings-previews" id="card-settings-previews" hidden>
+        <h3>Исходный набор</h3><div class="card-preview" id="default-card-preview" inert></div>
+        <h3>Личный набор</h3><div class="card-preview" id="personal-card-preview" inert></div>
+      </div>
+    </div>
     <div class="modal-btns">
       <button type="button" class="btn" id="card-settings-reset">По умолчанию</button>
       <form method="dialog"><button class="btn btn-primary">Готово</button></form>
     </div>
   </dialog>
-  <dialog class="card-settings column-settings" id="column-settings" aria-labelledby="column-settings-title">
+  <dialog class="card-settings column-settings corners" id="column-settings" aria-labelledby="column-settings-title">
     <h2 id="column-settings-title">Колонки АРМ</h2>
     <p id="column-settings-profile"></p>
     <label><input type="checkbox" id="collapse-empty" checked> Сворачивать пустые</label>
@@ -98,18 +172,27 @@
   </dialog>
   <div class="toasts" id="toasts"></div>
 
-  <div class="overlay" id="start-overlay">
-    <div class="start-card">
-      <div class="brand-mark big">МТС</div>
-      <h1>Начать смену</h1>
-      <p>Представьтесь — имя видно коллегам и на видеостене: кто взял инцидент в работу.</p>
-      <input id="me-input" class="name-input" placeholder="Имя и фамилия" autocomplete="name">
-      <p class="small">Браузер разрешает звук, голос и уведомления только после нажатия кнопки. Звук и голос потом включаются отдельно в шапке.</p>
-      <button class="btn btn-primary big" id="start-btn">Начать смену</button>
-      <button class="btn btn-ghost" id="start-silent">Без звука</button>
-    </div>
+  </div>
+  <div class="overlay login-overlay" id="start-overlay" hidden>
+    <form class="start-card login-form" id="login-form" method="post" aria-labelledby="login-title">
+      <div class="login-brand">
+        <img class="arm-brand-mark big" src="/mts-mark.svg" alt="МТС" width="64" height="64">
+        <button type="button" class="icon-btn" data-theme-toggle aria-label="Тёмная тема" aria-pressed="false" title="Переключить тему">
+          <svg class="ui-icon theme-moon" aria-hidden="true" focusable="false"><use href="/icons.svg#moon"></use></svg>
+          <svg class="ui-icon theme-sun" aria-hidden="true" focusable="false"><use href="/icons.svg#sun"></use></svg>
+        </button>
+      </div>
+      <h1 id="login-title">Вход в АРМ координатора</h1>
+      <p>Демонстрационный доступ</p>
+      <label for="login">Логин</label>
+      <input id="login" autocomplete="username" maxlength="100" required>
+      <label for="password">Пароль</label>
+      <input id="password" type="password" autocomplete="current-password" maxlength="1024" required>
+      <p id="login-message" class="login-message" role="status" aria-live="polite"></p>
+      <button class="btn btn-primary big" id="login-submit">Войти</button>
+    </form>
   </div>
 
-  <script type="module" src="/js/main.js"></script>
+  <script type="module" src="/js/login.js"></script>
 </body>
 </html>

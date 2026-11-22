@@ -1,8 +1,9 @@
 // Отрисовка — общая для АРМ координатора и видеостены (ui.wall).
 // Карточки кэшируются по подписи (hash + группы + ИИ + «в работе» + журнал), чтобы не мигать
 // и не сбрасывать подсветку; таймеры обновляются отдельно раз в секунду.
-import { esc, fmtDateTime, fmtTime, fmtLeft, fmtTimer, fmtWhen, plural, shortId } from "./format.js";
+import { esc, fmtDateTime, fmtTime, fmtLeft, fmtTimer, fmtWhen, plural, shortId, sameCoordinator } from "./format.js";
 import { isDup } from "./filters.js";
+import { icon } from "./icons.js";
 import { incidentLabels } from "./incident-labels.js";
 import { orderGroups } from "./column-settings.js";
 import { aiEnabled, outageTitle } from "./ai-mode.js";
@@ -14,7 +15,6 @@ const COUNTER_LABEL = {
   high: ["Высокий", "приоритет"],
   research: ["Исследо-", "вание"],
 };
-const COUNTER_SHORT = { critical: "Критические", coordinators: "На координаторах", high: "Высокий", research: "Исследование" };
 const FORECAST_TEXT = { ok: "успевают", risk: "срок на исходе", breach: "прогноз: не успеют", overdue: "срок нарушен" };
 const AI_SOURCE = { rules: "правила по истории", gigachat: "GigaChat", cache: "GigaChat (кэш)" };
 
@@ -33,20 +33,30 @@ const aiTag = (ai) => `<span class="ai-tag" title="Подсказка ИИ · ${
 // ---------- шапка ----------
 export function renderCounters(snap, onJump, opts = {}) {
   const el = $("#counters");
-  el.innerHTML = snap.groups.map((g) => {
+  const focusedKey = el.contains(document.activeElement) ? document.activeElement.dataset.key : null;
+  const markup = snap.groups.map((g) => {
     const n = snap.counts[g.key] ?? g.count;
     if (opts.wall) {
       const f = failures(snap, g);
-      const [a, b] = COUNTER_LABEL[g.key] || [g.title, ""];
-      return `<div class="counter ${g.key} ${n ? "has" : ""}"><b>${n}</b><span>${a}<br>${b}${f < n ? ` <i>(${f} ${plural(f, "сбой", "сбоя", "сбоев")})</i>` : ""}</span></div>`;
+      return `<div class="counter ${g.key} ${n ? "has" : ""}"><b>${n}</b><span>${esc(g.title)}${f < n ? ` <i>(${f} ${plural(f, "сбой", "сбоя", "сбоев")})</i>` : ""}</span></div>`;
     }
-    if (opts.compact) {
-      return `<button class="counter compact ${g.key} ${n ? "has" : ""}" data-key="${g.key}" title="${esc(g.title)}"><span>${COUNTER_SHORT[g.key] || esc(g.title)}</span><b>${n}</b></button>`;
+    if (opts.arm) {
+      const unclaimed = g.ids.filter((id) => {
+        const inc = snap.incidents[id];
+        return inc?.is_active && !inc.resolved_in.includes(g.key) && !ownerOf(inc, snap);
+      }).length;
+      return `<button class="counter ${g.key}" data-key="${g.key}"><span>${esc(g.title)}</span><div><b>${n}</b>${unclaimed ? `<small>Без координатора: ${unclaimed}</small>` : ""}</div></button>`;
     }
     const [a, b] = COUNTER_LABEL[g.key] || [g.title, ""];
     return `<button class="counter ${g.key} ${n ? "has" : ""}" data-key="${g.key}"><b>${n}</b><span>${a}<br>${b}</span></button>`;
-  }).join("") + (opts.wall && snap.outside_active ? `<div class="outside-note"><b>${snap.outside_active}</b><span>ещё активных<br>вне групп</span></div>` : "");
-  if (onJump) el.querySelectorAll(".counter").forEach((b) => (b.onclick = () => onJump(b.dataset.key)));
+  }).join("") + (opts.wall && snap.outside_active ? `<div class="outside-note"><b>${snap.outside_active}</b><span>Активных вне групп</span></div>` : "");
+  if (el.dataset.markup === markup) return;
+  el.dataset.markup = markup;
+  el.innerHTML = markup;
+  if (onJump) el.querySelectorAll(".counter").forEach((b) => {
+    b.onclick = () => onJump(b.dataset.key);
+    if (b.dataset.key === focusedKey) b.focus({ preventScroll: true });
+  });
 }
 
 export function renderClock(snap, nowMs) {
@@ -60,6 +70,7 @@ export function renderStatus(state) {
   let cls = "", text = `онлайн · ${snap ? snap.file.count : 0} в файле`;
   if (!online) { cls = "bad"; text = `нет связи · ${ago != null ? ago + " с назад" : ""}`; }
   else if (snap && snap.file.status !== "ok") { cls = "warn"; text = "файл не читается"; }
+  else if (snap && document.body.classList.contains("arm")) text = "Текущий снимок";
   const st = $("#status");
   st.innerHTML = `<span class="dot ${cls}"></span><span class="status-text">${text}</span>`;
   st.title = text;
@@ -67,58 +78,74 @@ export function renderStatus(state) {
 
   const bar = $("#filebar");
   if (snap && snap.file.status !== "ok") {
-    const when = snap.file.last_ok_at ? new Date(snap.file.last_ok_at).toLocaleTimeString("ru-RU") : "—";
+    const when = fmtDateTime(snap.file.last_ok_at);
     const what = snap.file.status === "missing" ? "Файл с инцидентами не найден" : "Файл с инцидентами повреждён или записан не до конца";
     bar.className = "filebar";
-    bar.textContent = `⚠ ${what}. Показаны последние целые данные (прочитаны в ${when}). ${snap.file.error || ""}`;
+    const lastRead = snap.file.last_ok_at ? `Показаны последние целые данные (${when} МСК).` : "Корректная выгрузка ещё не загружена.";
+    bar.textContent = `${what}. ${lastRead} ${snap.file.error || ""}`;
   } else if (!online) {
     bar.className = "filebar bad";
-    bar.textContent = "⚠ Нет связи с сервером дашборда. Данные могут быть устаревшими — переподключаемся…";
+    bar.textContent = "Нет связи с сервером дашборда. Данные могут быть устаревшими — переподключаемся…";
+  } else if (snap?.file.warnings?.length) {
+    bar.className = "filebar";
+    bar.textContent = `Проверьте выгрузку: ${snap.file.warnings[0]}.`;
   } else {
     bar.className = "filebar hidden";
   }
 }
 
 // ---------- тревога на стене: красная полоса на всю ширину ----------
-// Стена без звука и показывает только критические: полоса 5 секунд, дальше мигает карточка до «Взять в работу».
+// На стене — число невзятых критических и ближайший срок.
 export function renderWallBanner(fresh, nowMs) {
   const el = $("#alerts");
   if (!fresh.length) { el.innerHTML = ""; el.className = "alerts"; return; }
-  const inc = fresh[0].inc;
+  const inc = [...fresh].sort(byAlertDeadline)[0].inc;
   const rem = inc.deadline ? (Date.parse(inc.deadline) - nowMs) / 1000 : null;
   const n = fresh.length;
   el.className = "alerts wall-banner";
-  el.innerHTML = `<div class="alert critical">
-      <span class="alert-kind">${n > 1 ? `! НОВЫХ КРИТИЧЕСКИХ: ${n}` : "! КРИТИЧЕСКИЙ"}</span>
+  el.innerHTML = `<div class="alert critical corners">
+      <span class="alert-kind">${icon("alert")} ${n > 1 ? `${n} критических без координатора` : "Критический без координатора"}</span>
       <span class="alert-text"><b>${esc(inc.product || "")}</b> · ${esc(inc.title)} · ${esc(inc.team || "")}</span>
       <span class="alert-time" data-deadline="${esc(inc.deadline || "")}">${rem == null ? "срок не задан" : (rem < 0 ? "просрочен " : "до срока ") + fmtLeft(rem)}</span>
     </div>`;
 }
 
-// ---------- тревоги: одна строка (АРМ) ----------
-// Карточка тревоги мигает в своей колонке, внимание держат звук и голос. Снимает тревогу «Взять» —
-// каждую берут отдельно (общей кнопки нет: decisions.md, п. 4).
+function byAlertDeadline(a, b) {
+  return (Date.parse(a.inc.deadline) || Infinity) - (Date.parse(b.inc.deadline) || Infinity);
+}
+
 export function renderAlertLine(alerts, handlers) {
   const el = $("#alerts");
-  if (!alerts.length) { el.innerHTML = ""; el.className = "alerts"; return; }
-  const crit = alerts.some((a) => a.group === "critical");
-  const n = alerts.length;
-  const max = 6;
-  const oldest = Math.max(...alerts.map((a) => (a.since ? Date.now() - Date.parse(a.since) : 0)));
-  const waitMin = Math.floor(oldest / 60000);
-  el.className = `alerts alert-line ${crit ? "critical" : "coordinators"}`;
-  el.innerHTML = `
-    <span class="al-icon">🔔</span>
-    <b class="al-title">Не взяты в работу: ${n}</b>
-    <span class="al-chips">${alerts.slice(0, max).map((a) => `
-      <span class="al-chip ${a.group}" data-id="${esc(a.incident_id)}" data-key="${esc(a.key)}" title="${esc(a.group === "critical" ? "Критический" : "На координаторах")} · ${esc(a.inc.title)}">
-        <span class="al-name">${a.group === "critical" ? "! " : "→ "}${esc(a.inc.product || shortId(a.inc.id))}</span><button class="al-take" title="Взять в работу — тревога снимется у всех">Взять</button>
-      </span>`).join("")}${n > max ? `<span class="al-rest">и ещё ${n - max}</span>` : ""}</span>
-    <span class="al-wait">${waitMin ? `не взяты до ${waitMin} мин` : "только что"}</span>`;
-  el.querySelectorAll(".al-chip").forEach((c) => {
-    c.querySelector(".al-name").onclick = () => handlers.open(c.dataset.id);
-    c.querySelector(".al-take").onclick = () => handlers.claim(c.dataset.id);
-  });
+  const openGroups = new Set([...el.querySelectorAll("details[open]")].map((node) => node.dataset.group));
+  const focused = el.contains(document.activeElement) ? document.activeElement : null;
+  const markup = ["critical", "coordinators"].map((group) => {
+    const entries = alerts.filter((alert) => alert.group === group).sort(byAlertDeadline);
+    if (!entries.length) return "";
+    const title = group === "critical" ? "Критических без координатора" : "Новых назначений на координаторов";
+    return `<details class="shift-signal corners ${group}" data-group="${group}">
+      <summary><b>${title}: ${entries.length}</b><small class="signal-sla"></small></summary>
+      <ul>${entries.map(({ inc }) => `<li data-id="${esc(inc.id)}">
+        <button type="button" class="signal-open linklike" data-act="open">${esc(inc.title || inc.id)}</button>
+        ${inc.deadline ? `<small class="alert-time" data-deadline="${esc(inc.deadline)}"></small>` : "<small>Срок не задан</small>"}
+        <button type="button" class="btn small" data-act="claim" aria-label="Взять в работу ${esc(inc.id)}">Взять</button>
+      </li>`).join("")}</ul>
+    </details>`;
+  }).join("");
+  if (el.dataset.markup === markup) return;
+  el.dataset.markup = markup;
+  el.innerHTML = markup;
+  for (const details of el.querySelectorAll("details")) {
+    details.open = openGroups.has(details.dataset.group);
+    if (focused?.closest("details")?.dataset.group === details.dataset.group) {
+      const row = [...details.querySelectorAll("li")].find((li) => li.dataset.id === focused.closest("li")?.dataset.id);
+      (row?.querySelector(`[data-act="${focused.dataset.act}"]`) || details.querySelector("summary")).focus({ preventScroll: true });
+    }
+  }
+  if (focused && document.activeElement === document.body) $(".tab.active")?.focus({ preventScroll: true });
+  el.onclick = (event) => {
+    const button = event.target.closest("button[data-act]");
+    if (button) handlers[button.dataset.act](button.closest("li").dataset.id);
+  };
 }
 
 // ---------- колонки ----------
@@ -174,8 +201,20 @@ function fillOutageRow(el, row) {
     ${alarmCount ? `<strong class="outage-alarm-label">! ${alarmCount} не взято</strong>` : ""}`;
 }
 
+const closeTimers = new WeakMap();
+
 // ui: {query, changed, wall, open, predicate, limits, more, selected, alarmIds, actions, act}
 export function renderBoard(snap, nowMs, ui, board = $("#board")) {
+  const started = performance.now();
+  clearTimeout(closeTimers.get(board));
+  let nextClose = Infinity;
+  const stillVisible = (id) => {
+    const until = Date.parse(snap.incidents[id]?.closed_until);
+    if (!Number.isFinite(until)) return true;
+    if (until <= nowMs) return false;
+    nextClose = Math.min(nextClose, until);
+    return true;
+  };
   const useAI = aiEnabled(snap);
   if (!boardCaches.has(board)) boardCaches.set(board, new Map());
   const cardCache = boardCaches.get(board);
@@ -221,7 +260,7 @@ export function renderBoard(snap, nowMs, ui, board = $("#board")) {
     }
     // «Критические» вдвое шире; нет критических — колонка сужается и крупно «Критических нет»
     const crit = snap.groups.find((g) => g.key === "critical");
-    const hasCrit = !!(crit && crit.ids.length);
+    const hasCrit = !!crit?.ids.some(stillVisible);
     board.style.gridTemplateColumns = snap.groups.map((g) => g.key === "critical" ? (hasCrit ? "minmax(0, 2fr)" : "minmax(0, .75fr)") : "minmax(0, 1fr)").join(" ");
     board.classList.toggle("no-critical", !hasCrit);
   }
@@ -229,7 +268,8 @@ export function renderBoard(snap, nowMs, ui, board = $("#board")) {
     const col = board.querySelector(`.column[data-key="${CSS.escape(g.key)}"]`);
     const body = col.querySelector(".column-body");
     const more = col.querySelector(".column-more");
-    const ids = g.ids.filter((id) => matches(snap.incidents[id], ui.query) && (!ui.predicate || ui.predicate(snap.incidents[id])));
+    const currentIds = g.ids.filter(stillVisible);
+    const ids = currentIds.filter((id) => matches(snap.incidents[id], ui.query) && (!ui.predicate || ui.predicate(snap.incidents[id])));
     shown += ids.length;
     if (!ui.wall) {
       const hidden = !ids.length && (ui.columns.collapse || g.key === "outside");
@@ -239,7 +279,7 @@ export function renderBoard(snap, nowMs, ui, board = $("#board")) {
     const cnt = col.querySelector(".count");
     const n = snap.counts[g.key] ?? g.count;
     const f = failures(snap, g);
-    cnt.innerHTML = filtering ? `${ids.length}<small> из ${g.ids.length}</small>`
+    cnt.innerHTML = filtering ? `${ids.length}<small> из ${currentIds.length}</small>`
       : `${n}${f < n ? `<small> (${f} ${plural(f, "сбой", "сбоя", "сбоев")})</small>` : ""}`;
     const rows = ui.wall ? wallGroupRows(ids, snap.incidents, g.key, ui.alarmIds, outages, overlappingDuplicates) : ids.map((id) => ({ id }));
     const limit = ui.wall ? WALL_MAX : (ui.limits && ui.limits[g.key]) || ARM_PAGE;
@@ -306,6 +346,12 @@ export function renderBoard(snap, nowMs, ui, board = $("#board")) {
     }
   }
   for (const k of [...cardCache.keys()]) if (!alive.has(k)) cardCache.delete(k);
+  if (Number.isFinite(nextClose)) {
+    const timer = setTimeout(() => {
+      renderBoard(snap, nowMs + performance.now() - started, ui, board);
+    }, Math.ceil(nextClose - nowMs - (performance.now() - started)));
+    closeTimers.set(board, timer);
+  }
   if (ui.wall) fitColumns();
   else {
     const message = ui.emptyText || (filtering ? "Нет инцидентов по фильтрам. Измените или сбросьте фильтры." : "В группах пока нет инцидентов.");
@@ -338,11 +384,10 @@ export function fitColumns() {
     // строку «ещё N» показываем до замера: она съедает высоту колонки, иначе нижняя карточка обрезается
     more.classList.remove("hidden");
     more.textContent = "+ ещё";
-    const limit = body.clientHeight;
-    let hidden = Number(col.dataset.rest || 0);
-    for (const c of cards) {
-      if (c.offsetTop - body.offsetTop + c.offsetHeight > limit) { c.style.display = "none"; hidden++; }
-    }
+    const limit = body.getBoundingClientRect().bottom;
+    const overflow = cards.filter((card) => card.getBoundingClientRect().bottom > limit);
+    overflow.forEach((card) => (card.style.display = "none"));
+    const hidden = Number(col.dataset.rest || 0) + overflow.length;
     more.classList.toggle("hidden", hidden === 0);
     more.textContent = hidden ? `+ ещё ${hidden}` : "";
   });
@@ -372,6 +417,9 @@ function executor(inc, wall) {
 
 // Таймер срока. Текст и цвет обновляет tickCountdowns раз в секунду.
 function timer(inc, nowMs) {
+  if (inc.state_kind === "research") {
+    return `<span class="no-deadline">${inc.deadline ? `срок: ${esc(fmtDateTime(inc.deadline, nowMs))}` : "срок не задан"}</span>`;
+  }
   if (inc.state_kind !== "active") return "";
   if (!inc.deadline) {
     return inc.priority_level === "critical"
@@ -404,8 +452,8 @@ const ownerName = (inc) => (inc.coordinator && inc.coordinator.name ? firstName(
 function fillResolvedLine(el, inc, nowMs, wall, useAI) {
   const labels = wall ? "" : incidentLabels(inc, 2);
   const status = inc.state_kind === "closed" ? "закрыт" : `решён${inc.resolved_at ? " в " + esc(fmtWhen(inc.resolved_at, nowMs)) : ""}`;
-  el.className = `card is-resolved one-line${labels ? " has-labels" : ""}`;
-  el.innerHTML = `<span class="ok">✓</span><b class="card-product">${esc(inc.product || "—")}</b>
+  el.className = `card corners is-resolved one-line${labels ? " has-labels" : ""}`;
+  el.innerHTML = `<span class="ok">${icon("check")}</span><b class="card-product">${esc(inc.product || "—")}</b>
     <span class="line-title">${esc(cardTitle(inc, useAI).text)}</span>
     <span class="line-when">${status}${!wall && ownerName(inc) ? " · " + esc(ownerName(inc)) : ""}</span>
     ${labels ? `<div class="card-foot">${labels}</div>` : ""}`;
@@ -414,7 +462,7 @@ function fillResolvedLine(el, inc, nowMs, wall, useAI) {
 function stateNote(inc, nowMs) {
   if (inc.state_kind === "active") return "";
   const when = inc.resolved_at ? " " + esc(fmtWhen(inc.resolved_at, nowMs)) : "";
-  return `<div class="resolved-note">✓ ${inc.state_kind === "research" ? `решён${when}, идёт разбор причин` : `${esc(inc.state || "решён")}${when}`}</div>`;
+  return `<div class="resolved-note">${icon("check")} ${inc.state_kind === "research" ? `решён${when}, идёт разбор причин` : `${esc(inc.state || "решён")}${when}`}</div>`;
 }
 
 const metaLine = (inc, nowMs, wall) =>
@@ -434,32 +482,36 @@ function fillCardArm(el, inc, group, nowMs, changed, claim, action, ui) {
   const resolved = inc.resolved_in.includes(group) || (group === "outside" && (closed || inc.state_kind === "resolved"));
   const active = !resolved && inc.state_kind === "active";
   const focused = el.contains(document.activeElement) ? document.activeElement.dataset.act : null;
-  el.className = resolved ? "card arm-card is-resolved" : "card arm-card";
+  el.className = resolved ? "card arm-card corners is-resolved" : "card arm-card corners";
   el.classList.toggle("is-critical", !resolved && inc.priority_level === "critical");
   el.classList.toggle("flash", !!changed && changed.until > Date.now());
   const title = esc(inc.title || inc.short_description || "—");
   const meta = [
-    fields.product && esc(inc.product),
-    fields.created && `возник ${esc(fmtWhen(inc.created_at, nowMs))}`,
+    fields.created && `Возник: ${esc(fmtWhen(inc.created_at, nowMs))}`,
     fields.executor && executor(inc, false),
-    fields.state && !resolved && esc(inc.state),
   ].filter(Boolean).join(" · ");
   const buttons = [];
   if (claim) buttons.push(`<span class="owner" title="координатор с ${esc(fmtTime(claim.at))}">в работе: ${esc(firstName(claim.by))}</span>`);
   else if (active) buttons.push(`<button class="btn small btn-take" data-act="claim" title="Клавиша В">Взять в работу</button>`);
-  if (group === "coordinators" && active) buttons.push(`<button class="btn small btn-primary" data-act="transfer">Передать</button>`);
+  if (group === "coordinators" && !resolved && (active || inc.state_kind === "research")) {
+    buttons.push(`<button class="btn small btn-primary" data-act="transfer">Передать</button>`);
+  }
   if (action?.kind === "escalate" && active) buttons.push(`<button class="btn small" data-act="escalate">Эскалировать</button>`);
   const labels = fields.labels ? incidentLabels(inc, 2) : "";
 
   el.innerHTML = `
-    <div class="card-top arm-card-head">
+    ${fields.product || fields.state ? `<div class="card-top arm-card-head">
+      ${fields.product ? `<b class="card-product" title="${esc(inc.product || "—")}">${esc(inc.product || "—")}</b>` : ""}
+      ${fields.state ? `<span class="chip st-${resolved ? "resolved" : esc(inc.state_kind)}">${resolved ? (closed ? "Закрыт" : "Решён") : esc(inc.state || "—")}</span>` : ""}
+    </div>` : ""}
+    <button type="button" class="arm-card-title" data-act="open" title="${title}">${title}</button>
+    ${ui.aiEnabled && fields.summary && inc.ai?.summary ? `<div class="card-meta1 arm-card-summary">Краткая суть · ${esc(inc.ai.summary)}</div>` : ""}
+    ${meta ? `<div class="card-meta1">${meta}</div>` : ""}
+    <div class="arm-card-footer">
       <span class="inc-id">${esc(inc.id)}</span>
       <span class="card-prio prio-${esc(inc.priority_level)}">${esc(inc.priority || "—")}</span>
       ${resolved ? `<span class="arm-card-resolved">${closed ? "Закрыт" : `Решён${fields.state && inc.resolved_at ? " в " + esc(fmtWhen(inc.resolved_at, nowMs)) : ""}`}</span>` : fields.deadline ? timer(inc, nowMs) : ""}
     </div>
-    <button type="button" class="arm-card-title" data-act="open" title="${title}">${title}</button>
-    ${ui.aiEnabled && fields.summary && inc.ai?.summary ? `<div class="card-meta1 arm-card-summary">Краткая суть · ${esc(inc.ai.summary)}</div>` : ""}
-    ${meta ? `<div class="card-meta1">${meta}</div>` : ""}
     ${ui.aiEnabled && fields.ai && !resolved ? aiLineFor(inc, group) : ""}
     ${buttons.length || labels ? `<div class="card-btns">${buttons.join("")}${labels}</div>` : ""}
     ${fields.updates && changed?.until > Date.now() ? `<div class="changed">● ${esc(changed.texts.join(" · "))}</div>` : ""}`;
@@ -479,10 +531,14 @@ function fillCardArm(el, inc, group, nowMs, changed, claim, action, ui) {
   }
 }
 
+export function renderCardPreview(el, inc, group, nowMs, cardFields, aiEnabled, claim) {
+  fillCardArm(el, inc, group, nowMs, null, claim, null, { cardFields, aiEnabled });
+}
+
 // Карточка стены: крупно, без кнопок, ИИ и номера; исполнитель — только команда; «в работе у Ольги»
 function fillCardWall(el, inc, group, nowMs, changed, claim, hideDuplicate, useAI) {
   if (inc.resolved_in.includes(group)) { fillResolvedLine(el, inc, nowMs, true, useAI); return; }
-  el.className = "card";
+  el.className = "card corners";
   el.classList.toggle("is-critical", inc.priority_level === "critical");
   el.classList.toggle("flash", !!changed && changed.until > Date.now());
   const fc = inc.forecast;
@@ -504,7 +560,7 @@ function fillCardWall(el, inc, group, nowMs, changed, claim, hideDuplicate, useA
     ${inc.state_kind === "active" ? `<div class="deadline">
         <div class="deadline-row">${timer(inc, nowMs)}${inc.deadline ? `<small>до ${esc(fmtWhen(inc.deadline, nowMs))}</small>` : ""}</div>
         ${fc ? `<div class="bar ${fc.level}"><i style="width:${Math.min(100, fc.progress * 100)}%"></i></div>` : ""}
-      </div>` : stateNote(inc, nowMs)}
+      </div>` : stateNote(inc, nowMs) + timer(inc, nowMs)}
     ${workLine ? `<div class="work-line">${workLine}</div>` : ""}
     ${changed && changed.until > Date.now() ? `<div class="changed">● ${esc(changed.texts.join(" · "))}</div>` : ""}`;
 }
@@ -512,7 +568,7 @@ function fillCardWall(el, inc, group, nowMs, changed, claim, hideDuplicate, useA
 // Стена, инцидент уже есть полной карточкой в колонке левее — здесь компактная строка
 function fillCompactWall(el, inc, group, nowMs, claim, useAI) {
   if (inc.resolved_in.includes(group)) { fillResolvedLine(el, inc, nowMs, true, useAI); return; }
-  el.className = "card one-line compact-row";
+  el.className = "card corners one-line compact-row";
   el.classList.toggle("is-critical", inc.priority_level === "critical");
   el.innerHTML = `<b class="card-product">${esc(inc.product || "—")}</b>
     <span class="line-title">${esc(cardTitle(inc, useAI).text)}</span>
@@ -529,26 +585,46 @@ export function tickCountdowns(nowMs) {
     const end = Date.parse(dl);
     const sec = (end - nowMs) / 1000;
     if (el.classList.contains("alert-time")) {
-      el.textContent = (sec < 0 ? "просрочен " : "до срока ") + fmtLeft(sec);
+      el.textContent = sec < 0 ? `просрочен · ${fmtLeft(sec)}` : `до срока ${fmtLeft(sec)}`;
+      el.classList.toggle("overdue", sec < 0);
     } else if (el.classList.contains("countdown-mini")) {
-      el.textContent = sec < 0 ? "просрочен" : fmtLeft(sec);
+      el.textContent = fmtLeft(sec);
+      el.classList.toggle("overdue", sec < 0);
+      el.classList.toggle("danger", sec >= 0 && sec < 900);
+      const label = el.nextElementSibling;
+      if (label?.classList.contains("queue-sla-label")) label.textContent = sec < 0 ? "SLA просрочен" : "До нарушения";
     } else {
       const text = fmtTimer(sec);
       el.textContent = wall ? text.replace("осталось ", "") : text;
       const start = Date.parse(el.dataset.start || "");
       const frac = start && end > start ? (nowMs - start) / (end - start) : 0;
       const fc = el.dataset.fc;
+      const progress = el.parentElement.querySelector(".sla-progress");
+      if (progress) progress.value = Math.max(0, Math.min(100, frac * 100));
       el.classList.toggle("overdue", sec < 0);
       el.classList.toggle("danger", sec >= 0 && sec < 900);
       el.classList.toggle("warn", sec >= 900 && (frac >= 0.75 || fc === "breach" || fc === "risk"));
     }
   });
+  document.querySelectorAll(".shift-signal").forEach((signal) => {
+    const seconds = [...signal.querySelectorAll("[data-deadline]")].map(({ dataset }) =>
+      (Date.parse(dataset.deadline) - nowMs) / 1000);
+    const overdue = seconds.filter((sec) => sec < 0).length;
+    const next = seconds.find((sec) => sec >= 0);
+    const text = [
+      overdue ? `Просрочено: ${overdue}` : "",
+      next === undefined ? "" : `Ближайший SLA через ${fmtLeft(next)}`,
+    ].filter(Boolean).join(" · ");
+    const summary = signal.querySelector(".signal-sla");
+    if (summary.textContent !== text) summary.textContent = text;
+  });
 }
 
 // ---------- лента ----------
-const EVENT_ICON = { became_critical: "🔴", critical_resolved: "✅", to_coordinators: "🟣", resolved: "✔", reopened: "↺",
-  new: "＋", removed: "－", comment: "💬", escalated: "⇪" };
-const feedItem = (e) => `<span class="feed-item alert-${e.alert || ""}" data-id="${esc(e.incident_id)}">${fmtTime(e.clock_at)} ${EVENT_ICON[e.type] || "•"} <b>${esc(e.product || shortId(e.incident_id))}</b> ${esc(e.text)}${e.by ? ` <i>· ${esc(firstName(e.by))}</i>` : ""}</span>`;
+const EVENT_ICON = { became_critical: "alert", critical_resolved: "check", to_coordinators: "right",
+  resolved: "check", reopened: "reopen", new: "plus", removed: "minus", comment: "message", escalated: "up" };
+const feedText = (e) => `<time datetime="${esc(e.clock_at || "")}">${fmtTime(e.clock_at)}</time> ${icon(Object.hasOwn(EVENT_ICON, e.type) ? EVENT_ICON[e.type] : "dot")} <b>${esc(e.product || shortId(e.incident_id))}</b> ${esc(e.text)}${e.by ? ` <i>· ${esc(firstName(e.by))}</i>` : ""}`;
+const feedItem = (e) => `<span class="feed-item alert-${esc(e.alert || "")}" data-id="${esc(e.incident_id)}">${feedText(e)}</span>`;
 
 // Бегущая строка внизу (стена)
 export function renderFeed(snap, onOpen) {
@@ -563,15 +639,23 @@ export function renderFeed(snap, onOpen) {
 // Список событий во всплывающей панели (АРМ, кнопка «Лента»)
 export function renderFeedList(snap, el, onOpen) {
   const evs = (snap.events || []).slice(-50).reverse();
-  el.innerHTML = `<div class="pop-title">Лента изменений — последние ${evs.length}</div>` + (evs.length
-    ? `<div class="feed-list">${evs.map((e) => `<div class="feed-row">${feedItem(e)}</div>`).join("")}</div>`
-    : `<div class="pop-empty">Изменений пока нет — правки в файле и действия координаторов появятся здесь</div>`);
-  el.querySelectorAll(".feed-item").forEach((i) => (i.onclick = () => onOpen(i.dataset.id)));
+  const markup = evs.length
+    ? `<ul class="feed-list corners">${evs.map((event) => `<li class="feed-row"><button type="button" class="feed-item alert-${esc(event.alert || "")}" data-id="${esc(event.incident_id)}" data-seq="${esc(event.seq)}">${feedText(event)}</button></li>`).join("")}</ul>`
+    : `<p class="pop-empty">Изменений пока нет — правки в файле и действия координаторов появятся здесь</p>`;
+  if (el.dataset.markup === markup) return;
+  const focusedSeq = el.contains(document.activeElement) ? document.activeElement.dataset.seq : null;
+  el.dataset.markup = markup;
+  el.innerHTML = markup;
+  el.querySelectorAll("button.feed-item").forEach((button) => {
+    button.onclick = () => onOpen(button.dataset.id);
+    if (button.dataset.seq === focusedSeq) button.focus({ preventScroll: true });
+  });
+  if (focusedSeq && document.activeElement === document.body) $(".tab.active")?.focus({ preventScroll: true });
 }
 
 // «Мои»: одна карточка на инцидент в первой подходящей группе из снимка.
 export function renderMine(snap, el, me, nowMs, ui) {
-  const incs = Object.values(snap.incidents).filter((inc) => me && ownerOf(inc, snap)?.by === me);
+  const incs = Object.values(snap.incidents).filter((inc) => sameCoordinator(ownerOf(inc, snap)?.by, me));
   incs.sort((a, b) => (a.state_kind === "active" ? 0 : 1) - (b.state_kind === "active" ? 0 : 1)
     || (Date.parse(a.deadline || "2999-01-01") - Date.parse(b.deadline || "2999-01-01")));
   const groups = snap.groups.map((group) => ({ ...group, ids: [] }));
@@ -584,8 +668,7 @@ export function renderMine(snap, el, me, nowMs, ui) {
   }
   groups.push(outside);
   const counts = Object.fromEntries(groups.map((group) => [group.key, group.ids.length]));
-  const emptyText = !me ? "Представьтесь, чтобы увидеть инциденты в вашей работе."
-    : !incs.length ? "У вас пока нет инцидентов в работе." : undefined;
+  const emptyText = !incs.length ? "У вас пока нет инцидентов в работе." : undefined;
   const shown = renderBoard({ ...snap, groups, counts }, nowMs, { ...ui, emptyText }, el);
   return { total: incs.length, shown };
 }
@@ -595,7 +678,11 @@ export function toast(text, kind = "") {
   if (!box) return;
   const t = document.createElement("div");
   t.className = `toast ${kind}`;
-  t.textContent = text;
+  if (kind === "bad" || kind === "green") {
+    t.innerHTML = icon(kind === "bad" ? "alert" : "check");
+    t.append(" ");
+  }
+  t.append(text);
   box.appendChild(t);
   setTimeout(() => t.remove(), 8000);
 }

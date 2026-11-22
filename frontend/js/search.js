@@ -2,6 +2,8 @@
 // остальные тысячи — здесь. Результаты — списком поверх колонок; ↑↓ выбрать, Enter открыть, Esc закрыть.
 import { esc, fmtWhen, plural } from "./format.js";
 import { cardTitle, ownerOf } from "./render.js";
+import { api } from "./api.js";
+import { icon } from "./icons.js";
 
 const PAGE = 100;
 let useAI = true;
@@ -15,9 +17,7 @@ const el = () => document.getElementById("results");
 export async function searchTotal(params) {
   const p = new URLSearchParams(params);
   p.set("limit", "1");
-  const r = await fetch(`/api/search?${p}`, { cache: "no-store" });
-  if (!r.ok) throw new Error(`поиск: ${r.status}`);
-  return (await r.json()).total;
+  return (await api.search(p)).total;
 }
 
 async function load(append) {
@@ -28,16 +28,14 @@ async function load(append) {
   p.set("limit", String(PAGE));
   p.set("offset", String(append ? st.items.length : 0));
   try {
-    const r = await fetch(`/api/search?${p}`, { cache: "no-store" });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || r.status);
+    const d = await api.search(p);
     if (id !== st.reqId) return; // пришёл ответ на старый запрос — пропускаем
     st.items = append ? st.items.concat(d.items) : d.items;
     st.total = d.total;
     st.error = "";
     if (!append) st.sel = -1;
   } catch (e) {
-    if (id !== st.reqId) return;
+    if (e.name === "AbortError" || id !== st.reqId) return;
     st.error = `Поиск не удался: ${e.message}`;
   }
   st.loading = false;
@@ -69,6 +67,7 @@ export function hideResults() {
   st.reqId++;
   el().classList.add("hidden");
   el().innerHTML = "";
+  delete el().dataset.markup;
   handlers.close();
 }
 
@@ -99,7 +98,7 @@ function row(inc, i, nowMs, selectedId) {
   return `<div class="res-row ${i === st.sel ? "sel" : ""} ${inc.id === selectedId ? "open" : ""} ${inc.priority_level === "critical" && active ? "crit" : ""}" data-i="${i}">
     <span class="card-prio prio-${inc.priority_level}">${esc(inc.priority || "")}</span>
     <span class="res-main"><b>${esc(inc.product || "—")}</b> · ${esc(t.text)}
-      <small>возник ${esc(fmtWhen(inc.created_at, nowMs))} · ${esc(inc.team || "—")} / ${inc.assignee ? esc(inc.assignee.split(" (")[0]) : "сотрудник не назначен"} · ${esc(inc.state || "")}</small></span>
+      <small><span class="inc-id">${esc(inc.id)}</span> · возник ${esc(fmtWhen(inc.created_at, nowMs))} · ${esc(inc.team || "—")} / ${inc.assignee ? esc(inc.assignee.split(" (")[0]) : "сотрудник не назначен"} · ${esc(inc.state || "")}</small></span>
     <span class="res-time">${timer}</span>
     <span class="res-owner">${owner ? `<span class="owner">в работе: ${esc(owner.by.split(" (")[0])}</span>`
       : active ? `<button class="btn small btn-take" data-claim="${esc(inc.id)}">Взять</button>` : ""}</span>
@@ -110,19 +109,32 @@ export function paint(nowMs = Date.now(), selectedId = null) {
   if (!st.open) return;
   const box = el();
   const n = st.items.length;
-  box.innerHTML = `
+  const focus = box.contains(document.activeElement) ? document.activeElement.dataset : null;
+  const scroll = box.querySelector(".res-list")?.scrollTop || 0;
+  const markup = `
     <div class="res-head">
       <b>${esc(st.title)}</b>
       <span class="res-count">${st.loading && !n ? "ищем…" : `найдено ${st.total} ${plural(st.total, "инцидент", "инцидента", "инцидентов")}${n < st.total ? ` · показано ${n}` : ""}`}</span>
       <span class="res-hint">↑↓ выбрать · Enter открыть · Esc закрыть</span>
-      <button class="btn small" data-act="close" title="Esc">✕</button>
+      <button class="btn small" data-act="close" title="Esc" aria-label="Закрыть результаты поиска">${icon("close")}</button>
     </div>
-    ${st.error ? `<div class="res-error">${esc(st.error)}</div>` : ""}
+    ${st.error ? `<div class="res-error" role="status">${esc(st.error)} <button type="button" class="btn small" data-act="retry">Повторить</button></div>` : ""}
     <div class="res-list">${n ? st.items.map((inc, i) => row(inc, i, nowMs, selectedId)).join("")
       : st.loading ? "" : `<div class="pop-empty">Ничего не найдено — попробуйте другой запрос или сбросьте фильтры</div>`}
       ${n < st.total ? `<button class="btn small res-more" data-act="more" ${st.loading ? "disabled" : ""}>Показать ещё ${Math.min(PAGE, st.total - n)} · осталось ${st.total - n}</button>` : ""}
     </div>`;
+  if (box.dataset.markup === markup) return;
+  box.dataset.markup = markup;
+  box.innerHTML = markup;
+  box.querySelector(".res-list").scrollTop = scroll;
+  if (focus) {
+    const target = [...box.querySelectorAll("button:enabled")].find(({ dataset }) =>
+      dataset.act === focus.act && dataset.claim === focus.claim);
+    (target || box.querySelector("[data-act=close]")).focus({ preventScroll: true });
+  }
   box.querySelector("[data-act=close]").onclick = hideResults;
+  const retry = box.querySelector("[data-act=retry]");
+  if (retry) retry.onclick = () => load(false);
   const more = box.querySelector("[data-act=more]");
   if (more) more.onclick = () => load(true);
   box.querySelectorAll(".res-row").forEach((r) => {

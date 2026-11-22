@@ -32,11 +32,12 @@ from .config import Rules, Settings
 from .desk import ALERT_GROUPS, DeskState
 from .diff import DONE_KINDS, diff
 from .forecast import forecast_all
-from .groups import assign_groups, finished_until
+from .groups import assign_groups, finished_until, resolved_moment
 from .history import History
 from .labels import apply_labels
-from .outages import Outage, OutageCandidate, build_candidates, build_outages
-from .queue import build_queue
+from .outages import Outage, OutageCandidate, build_candidates, build_outages, growth_proposals
+from .handoffs import Handoffs
+from .queue import build_queue, escalation_is_current
 from .queue_preferences import QueuePreferences
 from .recurrences import apply_recurrences
 from .refs import Refs
@@ -70,6 +71,7 @@ class Store:
         self.desk.now_fn = self.clock.now
         self.history = history or History(None)
         self.queue_preferences = queue_preferences or QueuePreferences()
+        self.handoffs = Handoffs(settings.cache_dir / "handoffs.json")
 
         self.incidents: dict[str, dict] = {}
         self.raw_by_id: dict[str, dict] = {}
@@ -148,7 +150,7 @@ class Store:
             self._stat = stat
             if self.file["status"] != "ok":
                 with self.lock:
-                    self.file.update(status="ok", error=None)
+                    self.file.update(status="ok", error=None, last_ok_at=adapter.iso(_utcnow()))
                     self.version += 1
                 return True
             return self._regroup_if_needed(force=False)
@@ -171,6 +173,9 @@ class Store:
             new_incidents, warnings = adapter.adapt_all(data, self.rules, self.settings.itsm_url_template, prev)
         except ValueError as e:
             self._set_file_problem("corrupt", str(e))
+            return False
+        if data and not new_incidents:
+            self._set_file_problem("corrupt", "в файле нет ни одного инцидента с id")
             return False
         with self.lock:
             self._bytes_hash, self._stat, self._data = h, stat, data
@@ -498,7 +503,9 @@ class Store:
                     continue
                 if prios and inc.get("priority_id") not in prios:
                     continue
-                if group and group not in inc.get("groups", ()):
+                if group == "outside" and (kind != "active" or inc["groups"]):
+                    continue
+                if group and group != "outside" and group not in inc["groups"]:
                     continue
                 if coordinator and ((inc.get("coordinator") or {}).get("name") or "").casefold() != coordinator:
                     continue
@@ -549,12 +556,49 @@ class Store:
         with self.lock:
             return [e for e in self.events if e["seq"] > seq]
 
+    def recently_closed(self, kind: str, offset: int = 0, limit: int = 50) -> dict:
+        with self.lock:
+            now = self.clock.now()
+            cutoff = now - timedelta(hours=3)
+            if kind == "outages":
+                rows = [
+                    (outage.completed_at, {
+                        "id": outage.summary["id"], "name": outage.summary["name"],
+                        "source": outage.summary["source"], "status": "resolved", "count": len(outage.summary["incident_ids"]),
+                        "products": outage.summary["products"],
+                    })
+                    for outage in self._outages.values()
+                    if outage.completed_at is not None and cutoff <= outage.completed_at <= now
+                ]
+            else:
+                rows = []
+                for inc in self.incidents.values():
+                    if inc["state_kind"] != "closed":
+                        continue
+                    at = resolved_moment(inc, self.seen_resolved.get(inc["id"]))
+                    if at is not None and cutoff <= at <= now:
+                        rows.append((at, {key: inc[key] for key in ("id", "title", "product", "team")}))
+            rows.sort(key=lambda row: (row[0], row[1]["id"]), reverse=True)
+            return {
+                "total": len(rows),
+                "items": [{**row, "at": adapter.iso(at)} for at, row in rows[offset:offset + limit]],
+                "previous_offset": max(0, offset - limit) if offset else None,
+                "next_offset": offset + limit if offset + limit < len(rows) else None,
+            }
+
     def incident(self, inc_id: str) -> dict | None:
         with self.lock:
             inc = self.incidents.get(inc_id)
             if inc is None:
                 return None
-            return {**_public(inc), "raw": self.raw_by_id.get(inc_id), "history": self.history.get(inc_id)}
+            result = {**_public(inc), "raw": self.raw_by_id.get(inc_id), "history": self.history.get(inc_id)}
+            if inc["state_kind"] == "active" and escalation_is_current(inc, self.history):
+                entry = inc["_escalation"]
+                if entry["id"]:
+                    result["escalation_receipt"] = {"id": entry["id"], "by": entry["by"], "due": adapter.iso(entry["due"]),
+                                                    "accepted_by": entry["accepted_by"],
+                                                    "accepted_at": adapter.iso(entry["accepted_at"])}
+            return result
 
     def outage_candidate(self, candidate_id: str) -> OutageCandidate | None:
         with self.lock:
@@ -567,7 +611,9 @@ class Store:
                 return None
             summary = outage.summary
             if include_incidents:
-                return {**summary, "incidents": [_public(self.incidents[i]) for i in summary["incident_ids"]]}
+                members = [self.incidents[i] for i in summary["incident_ids"]]
+                return {**summary, "incidents": [_public(inc) for inc in members],
+                        "growth_proposals": growth_proposals(members, self.incidents)}
             return summary
 
 

@@ -39,6 +39,11 @@ class Settings:
     backups_dir: Path = field(default_factory=lambda: _path(os.getenv("BACKUPS_DIR", "cache/backups")))
     backups_keep: int = field(default_factory=lambda: int(os.getenv("BACKUPS_KEEP", "20")))
     frontend_dir: Path = field(default_factory=lambda: ROOT / "frontend")
+    demo_accounts: str = field(default_factory=lambda: os.getenv("DEMO_ACCOUNTS", ""), repr=False)
+    demo_session_seconds: str = field(default_factory=lambda: os.getenv("DEMO_SESSION_SECONDS", "7200"))
+    demo_origins: str = field(default_factory=lambda: os.getenv(
+        "DEMO_ORIGINS", "http://127.0.0.1:8000,http://localhost:8000"))
+    cache_dir: Path = field(default_factory=lambda: _path(os.getenv("CACHE_DIR", "cache")))
 
 
 @dataclass

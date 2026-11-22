@@ -5,23 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Видеостена · массовые инциденты · МТС</title>
   <link rel="icon" id="favicon" href="data:,">
+  <script src="/js/theme.js" data-default-theme="dark"></script>
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/wall-overview.css">
 </head>
 <body class="wall">
   <header class="topbar" id="topbar">
     <div class="brand">
-      <div class="brand-mark">МТС</div>
-      <div class="brand-title">Массовые инциденты<br><span>мониторинг и координация</span></div>
+      <img class="arm-brand-mark" src="/mts-mark.svg" width="36" height="36" alt="МТС">
+      <div class="brand-title">Операционный мониторинг</div>
     </div>
-    <nav class="counters" id="counters"></nav>
     <div class="topbar-right">
-      <div class="clock" id="clock"></div>
       <div class="status" id="status"></div>
       <button class="icon-btn" id="sound-btn"></button>
       <button class="icon-btn" id="voice-btn"></button>
+      <button class="icon-btn" type="button" data-theme-toggle aria-label="Тёмная тема" aria-pressed="true">
+        <svg class="ui-icon theme-moon" aria-hidden="true" focusable="false"><use href="/icons.svg#moon"></use></svg>
+        <svg class="ui-icon theme-sun" aria-hidden="true" focusable="false"><use href="/icons.svg#sun"></use></svg>
+      </button>
     </div>
   </header>
+  <section class="wall-heading">
+    <h1>Массовые инциденты</h1><div class="clock" id="clock"></div>
+  </section>
+  <nav class="counters corners" id="counters" aria-label="Сводка по группам"></nav>
   <section id="wall-urgency" class="wall-urgency" aria-label="Срочность по группам"></section>
 
   <div id="filebar" class="filebar hidden"></div>
@@ -30,10 +37,10 @@
 
   <div class="wall-workspace">
     <main class="board" id="board"></main>
-    <aside id="wall-owners" class="wall-owners" aria-label="Кто чем занят"></aside>
+    <aside id="wall-owners" class="wall-owners corners" aria-label="Кто чем занят"></aside>
   </div>
 
-  <footer class="feed" id="feed"></footer>
+  <footer class="feed corners" id="feed"></footer>
   <div class="toasts" id="toasts"></div>
 
   <script type="module" src="/js/wall.js"></script>

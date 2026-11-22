@@ -50,9 +50,9 @@ def test_resolved_critical_without_completion_uses_seen_time(rules):
     rec = make("A", 10, 4)
     incs, _ = groups_of(rules, [rec])
     assert incs["A"]["groups"] == []  # не знаем, когда решён
-    incs, _ = groups_of(rules, [rec], seen={"A": NOW - timedelta(minutes=4, seconds=59)})
+    incs, _ = groups_of(rules, [rec], seen={"A": NOW - timedelta(seconds=9)})
     assert incs["A"]["resolved_in"] == ["critical"]
-    _, expired = groups_of(rules, [rec], seen={"A": NOW - timedelta(minutes=5)})
+    _, expired = groups_of(rules, [rec], seen={"A": NOW - timedelta(seconds=10)})
     assert expired["critical"] == []
 
 

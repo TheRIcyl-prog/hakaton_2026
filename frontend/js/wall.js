@@ -4,16 +4,14 @@ import * as R from "./render.js";
 import * as Sound from "./sound.js";
 import { computeAlerts, processEvents, ring } from "./alerts.js";
 import { startPolling } from "./api.js";
-import { renderWallOutages } from "./outages.js";
+import { renderWallOutages, tickOutageGrowth } from "./outages.js";
 import { paintWallOverview } from "./wall-overview.js";
 
 const HIGHLIGHT_MS = 20000;
-const BANNER_MS = 5000; // красная полоса на новый критический — 5 секунд, дальше мигает карточка
 const DESIGN_WIDTH = 1600;
 const outagesEl = document.getElementById("wall-outages");
-const state = { snap: null, online: true, lastOkMs: 0, offsetMs: 0, alerts: [], bannerReady: false };
+const state = { snap: null, online: true, lastOkMs: 0, offsetMs: 0, alerts: [] };
 const ui = { query: "", changed: new Map(), wall: true, alarmIds: new Set() };
-const bannerSeen = new Map(); // key тревоги -> когда впервые увидели (0 — уже висела при открытии стены)
 const nowMs = () => Date.now() + state.offsetMs;
 
 function scale() {
@@ -54,29 +52,24 @@ function render() {
   const now = nowMs();
   // стена визуально показывает только критические тревоги
   state.alerts = computeAlerts(snap).filter((a) => a.group === "critical");
-  const first = bannerSeen.size === 0 && !state.bannerReady;
-  state.bannerReady = true;
-  const keys = new Set(state.alerts.map((a) => a.key));
-  for (const k of [...bannerSeen.keys()]) if (!keys.has(k)) bannerSeen.delete(k);
-  for (const a of state.alerts) if (!bannerSeen.has(a.key)) bannerSeen.set(a.key, first ? 0 : Date.now());
   ui.alarmIds = new Set(state.alerts.map((a) => a.incident_id));
   R.renderCounters(snap, null, { wall: true });
   R.renderClock(snap, now);
   renderBanner(now);
   renderWallOutages(outagesEl, snap, ui.alarmIds);
-  R.renderBoard(snap, now, ui);
+  tickOutageGrowth(now);
   paintWallOverview(snap, now);
+  R.renderBoard(snap, now, ui);
   R.tickCountdowns(now);
   ring(state.alerts, now, { voice: true, onlyCritical: true }); // звук и голос молчат, если выключены (по умолчанию)
 }
 
 let bannerShown = "";
 function renderBanner(now) {
-  const fresh = state.alerts.filter((a) => Date.now() - bannerSeen.get(a.key) < BANNER_MS);
-  const sig = fresh.map((a) => a.key).join();
+  const sig = JSON.stringify(state.alerts.map((a) => [a.key, a.inc.hash]));
   if (sig === bannerShown) return;
   bannerShown = sig;
-  R.renderWallBanner(fresh, now);
+  R.renderWallBanner(state.alerts, now);
   R.fitColumns(); // полоса съедает высоту — пересчитать «ещё N»
 }
 
@@ -84,6 +77,7 @@ let blink = false;
 setInterval(() => {
   if (!state.snap) return;
   const now = nowMs();
+  tickOutageGrowth(now);
   R.tickCountdowns(now);
   R.renderClock(state.snap, now);
   paintWallOverview(state.snap, now);
@@ -94,7 +88,7 @@ setInterval(() => {
   ring(state.alerts, now, { voice: true, onlyCritical: true });
   blink = !blink;
   const crit = state.alerts.filter((a) => a.group === "critical").length;
-  document.title = crit && blink ? `🔴 КРИТИЧЕСКИЙ (${crit}) — видеостена` : "Видеостена · массовые инциденты";
+  document.title = crit && blink ? `КРИТИЧЕСКИЙ (${crit}) — видеостена` : "Видеостена · массовые инциденты";
 }, 1000);
 
 // Звук и голос на стене — отдельные переключатели, по умолчанию выключены (обычно звук — в гарнитурах на АРМ).

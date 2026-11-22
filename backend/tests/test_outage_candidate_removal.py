@@ -2,7 +2,6 @@ import json
 from datetime import timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 
 from backend.app.adapter import iso
 from backend.app.itsm import Itsm, ItsmError
@@ -16,7 +15,7 @@ def _heuristic_group(products=("Ковёр", "Избушка", "Зеркальц
             for i, (inc_id, product) in enumerate(zip("ABC", products))]
 
 
-def test_delete_candidate_member_returns_pair_without_confirming_and_survives_reload(make_store, monkeypatch):
+def test_delete_candidate_member_returns_pair_without_confirming_and_survives_reload(make_store, monkeypatch, coordinator_clients):
     monkeypatch.setenv("LLM_PROVIDER", "rules")
     from backend.app import main
 
@@ -26,8 +25,8 @@ def test_delete_candidate_member_returns_pair_without_confirming_and_survives_re
     monkeypatch.setattr(main, "itsm", itsm)
     [candidate] = store.snapshot()["outage_candidates"]
     url = f"/api/outage-candidates/{candidate['id']}/incidents/A"
-    client = TestClient(main.app)
-    response = client.request("DELETE", url, json={"by": "Ольга"})
+    client = coordinator_clients(main.app, "Ольга")["Ольга"]
+    response = client.delete(url)
     assert response.status_code == 200, response.text
     pair = response.json()["candidate"]
     assert pair["id"] != candidate["id"] and pair["incident_ids"] == ["B", "C"]
@@ -39,7 +38,7 @@ def test_delete_candidate_member_returns_pair_without_confirming_and_survives_re
     assert saved[0]["outageExclusions"][0]["incident_ids"] == ["B", "C"]
     assert saved[0]["workLog"][-1]["author"] == "Ольга"
     assert saved[0]["workLog"][-1]["action"] == "outage_candidate_remove"
-    assert client.request("DELETE", url, json={"by": "Ольга"}).status_code == 409
+    assert client.delete(url).status_code == 409
 
     restarted = Store(store.settings, store.rules, store.clock)
     assert restarted.poll()

@@ -2,7 +2,6 @@
 import json
 
 import pytest
-from fastapi.testclient import TestClient
 
 from backend.app.itsm import Itsm, ItsmError
 
@@ -72,7 +71,7 @@ def test_closed_is_final(env):
         itsm.set_state("A", 2, "Ольга")
 
 
-def test_status_api_updates_exported_enum_and_checks_drawer_hash(make_store, monkeypatch):
+def test_status_api_updates_exported_enum_and_checks_drawer_hash(make_store, monkeypatch, coordinator_clients):
     from backend.app import main
 
     record = make("A", 0, 3)
@@ -80,12 +79,12 @@ def test_status_api_updates_exported_enum_and_checks_drawer_hash(make_store, mon
     store, path = make_store([record])
     monkeypatch.setattr(main, "store", store)
     monkeypatch.setattr(main, "itsm", Itsm(path, store.rules, store.clock.now, store=store))
-    client = TestClient(main.app)
+    client = coordinator_clients(main.app, "Ольга")["Ольга"]
     url = "/api/itsm/A/state"
     original = client.get("/api/incidents/A").json()
     assert client.get("/api/meta").json()["transitions"]["0"] == [2, 7]
 
-    body = {"by": "Ольга", "state_id": 2, "expected_hash": original["hash"]}
+    body = {"state_id": 2, "expected_hash": original["hash"]}
     running = client.post(url, json=body)
     assert running.status_code == 200 and running.json()["state_id"] == 2
     body.update(state_id=7, reason="Постоянное решение", comment="Подтверждено исполнителем")

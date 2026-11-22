@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from backend.app import ai
 from backend.app.ai.llm import LLMWorker
@@ -132,16 +131,16 @@ def test_llm_receives_only_team_pairs_and_keeps_feedback_evidence(tmp_path, rule
             assert private not in client.prompt
 
 
-def test_feedback_api_rejects_stale_suggestion_and_applies_valid_correction(make_store, tmp_path, monkeypatch):
+def test_feedback_api_rejects_stale_suggestion_and_applies_valid_correction(make_store, tmp_path, monkeypatch, coordinator_clients):
     from backend.app import main
 
     ai.reset(feedback_path=tmp_path / "ai_feedback.json")
     store, _ = make_store(records("ORIGINAL"))
     monkeypatch.setattr(main, "store", store)
-    client = TestClient(main.app)
+    client = coordinator_clients(main.app, "Ольга")["Ольга"]
     inc = client.get("/api/incidents/ORIGINAL").json()
     url = "/api/incidents/ORIGINAL/ai-feedback"
-    body = {"by": "Ольга", "kind": "route", "expected_hash": inc["hash"],
+    body = {"kind": "route", "expected_hash": inc["hash"],
             "expected_team": inc["ai"]["route"]["team"], "corrected_team": "КЦ Леший"}
 
     assert client.post(url, json={**body, "expected_hash": "old"}).status_code == 409

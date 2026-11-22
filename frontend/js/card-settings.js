@@ -1,8 +1,8 @@
 const FIELDS = [
-  ["product", "Продукт", false],
-  ["created", "Время регистрации", false],
-  ["executor", "Команда и исполнитель", false],
-  ["state", "Статус", false],
+  ["product", "Продукт", true],
+  ["created", "Время возникновения", true],
+  ["executor", "Команда и исполнитель", true],
+  ["state", "Статус", true],
   ["deadline", "Срок", true],
   ["labels", "Метки", true],
   ["summary", "Краткая суть", false],
@@ -10,7 +10,7 @@ const FIELDS = [
   ["updates", "Недавние изменения", false],
 ];
 const PREFIX = "mi-dashboard:card-fields:";
-const defaults = Object.fromEntries(FIELDS.map(([key, , value]) => [key, value]));
+export const defaultCardFields = Object.fromEntries(FIELDS.map(([key, , value]) => [key, value]));
 
 export function mountCardSettings(dialog, { getName, onChange }) {
   const profile = dialog.querySelector("#card-settings-profile");
@@ -52,8 +52,8 @@ export function mountCardSettings(dialog, { getName, onChange }) {
     save({ ...fields, [input.name]: input.checked });
   });
   dialog.querySelector("#card-settings-reset").onclick = () => {
-    controls.forEach((input) => { input.checked = defaults[input.name]; });
-    save({ ...defaults });
+    controls.forEach((input) => { input.checked = defaultCardFields[input.name]; });
+    save({ ...defaultCardFields });
   };
   window.addEventListener("storage", (event) => {
     if (event.key === null || event.key === selected) { sync(true); onChange(); }
